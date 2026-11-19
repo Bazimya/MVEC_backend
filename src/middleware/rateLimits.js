@@ -29,5 +29,7 @@ module.exports = {
   payment: make(10, 20, "Too many payment attempts. Wait a few minutes and try again."),
   checkout: make(10, 20, "Too many orders placed in a short time. Wait a few minutes and try again."),
   // Reviews, problem reports and similar writes.
+  // Address search (OpenStreetMap allows little traffic): 60 per 5 minutes.
+  geocode: make(5, 60, "Too many address searches. Wait a moment and try again."),
   write: make(10, 30, "You are doing that too often. Wait a few minutes and try again."),
 };

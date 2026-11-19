@@ -27,6 +27,8 @@ const settings = () => ({
   pickupMinutes: num("DELIVERY_PICKUP_MINUTES", 30),
   pickupWarnMinutes: num("DELIVERY_PICKUP_WARN_MINUTES", 5),
   reassignAfterMinutes: num("DELIVERY_PICKUP_REASSIGN_MINUTES", 15),
+  // No rider took a parcel this long after it was offered: the seller may deliver it.
+  sellerFallbackMinutes: num("DELIVERY_SELLER_FALLBACK_MINUTES", 10),
   // Road routes for the live maps (OpenStreetMap roads); empty = straight lines.
   osrmUrl: process.env.OSRM_URL ?? "https://router.project-osrm.org",
   // A rider carries one parcel at a time.

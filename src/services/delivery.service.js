@@ -110,6 +110,9 @@ const riderAccount = (rider, user) => ({
   phone: user?.phone || "",
   vehicleType: rider.vehicleType,
   plateNumber: rider.plateNumber || "",
+  province: rider.province || "",
+  district: rider.district || "",
+  districts: areaOf(rider),
   status: rider.status,
   reviewNote: rider.reviewNote || "",
   isOnline: Boolean(rider.isOnline),
@@ -162,6 +165,7 @@ async function createForOrder(order, vendorIds, { ready = true } = {}) {
 
 /** The buyer paid: every rider parcel is offered now, before the seller has it ready. */
 async function orderPaid(order) {
+  await nudgePinless(order).catch(() => {});
   const vendorIds = (order.shippingBreakdown || []).filter((p) => p.method === "RIDER" && p.vendor).map((p) => idOf(p.vendor));
   if (!vendorIds.length) return [];
   return createForOrder(order, vendorIds, { ready: false });
@@ -245,11 +249,44 @@ async function dispatch(deliveryId) {
       type: "DELIVERY",
       title: `New delivery: ${money(delivery.fee)}`,
       message: `Pick up at ${delivery.pickupName}, ${Math.round(c.km * 10) / 10} km from you${delivery.readyAt ? "" : " (the seller is still preparing it)"}. Answer within ${s.offerTimeoutSeconds} seconds.`,
-      link: "/delivery",
+      link: `/delivery/offers/${idOf(delivery)}`,
       sms: `Ikiguzi: new delivery at ${delivery.pickupName} (${money(delivery.fee)}). Open the app to accept.`,
     }).catch(() => {});
   }
+  await wakeRiders(delivery, new Set([...asked, ...candidates.map((c) => idOf(c.rider.user))])).catch((e) => console.error("[Delivery wake] failed:", e.message));
   return candidates.map((c) => idOf(c.rider.user));
+}
+
+/**
+ * Riders who can't be offered the parcel by position yet but are probably
+ * close: last seen within range (an old position, or offline), or working the
+ * store's district. Each is woken once per parcel and may then take it.
+ */
+async function wakeRiders(delivery, skip) {
+  const s = cfg.settings();
+  const already = new Set((delivery.alerted || []).map(String));
+  const busy = new Set((await Delivery.find({ status: { $in: cfg.ACTIVE } }).select("rider").lean()).map((d) => idOf(d.rider)));
+  const store = delivery.store ? await Store.findById(delivery.store).select("address businessAddress").lean() : null;
+  const place = [store?.address?.city, store?.businessAddress, delivery.pickupAddress].filter(Boolean).join(" ").toLowerCase();
+  const riders = await Rider.find({ status: "APPROVED" }).lean();
+  const woken = riders
+    .filter((r) => { const id = idOf(r.user); return !skip.has(id) && !already.has(id) && !busy.has(id); })
+    .map((r) => ({ r, km: r.lat != null ? cfg.haversineKm(r.lat, r.lng, delivery.pickupLat, delivery.pickupLng) : null }))
+    .filter(({ r, km }) => (km != null && km <= s.radiusKm) || areaOf(r).some((d) => place.includes(String(d).toLowerCase())))
+    .slice(0, s.maxOfferRecipients);
+  if (!woken.length) return [];
+  await Delivery.updateOne({ _id: idOf(delivery) }, { $set: { alerted: [...already, ...woken.map(({ r }) => idOf(r.user))] } });
+  for (const { r } of woken) {
+    const ask = r.isOnline ? "Open Ikiguzi to see it and accept." : "Go online in Ikiguzi to take it.";
+    notifications.notify(r.user, {
+      type: "DELIVERY",
+      title: `A parcel is waiting near you: ${money(delivery.fee)}`,
+      message: `Pick up at ${delivery.pickupName}. ${ask}`,
+      link: `/delivery/offers/${idOf(delivery)}`,
+      sms: `Ikiguzi: a parcel is waiting at ${delivery.pickupName} (${money(delivery.fee)}). ${ask}`,
+    }).catch(() => {});
+  }
+  return woken.map(({ r }) => idOf(r.user));
 }
 
 /** Offers whose time ran out go to the next riders (and to riders who came online). */
@@ -285,6 +322,34 @@ async function profile(user) {
   return { rider: riderAccount(rider, await User.findById(idOf(user)).select("Fullname phone").lean()) };
 }
 
+/** { province, district } from one of Rwanda's 30 districts; {} when none is given. */
+/**
+ * The districts a rider delivers in, from `{ districts: [...] }` or the older
+ * `{ district }`: { districts, district, province } (the first one leads).
+ */
+function readArea(body = {}, { required = false } = {}) {
+  const { DISTRICTS, provinceOfDistrict } = require("../config/rwandaLocations");
+  const raw = Array.isArray(body.districts) ? body.districts : body.district ? [body.district] : [];
+  const wanted = [...new Set(raw.map((d) => String(d || "").trim().toLowerCase()).filter(Boolean))];
+  if (!wanted.length) {
+    if (required) throw httpError(400, "Choose at least one district you deliver in.");
+    return {};
+  }
+  const districts = wanted.map((w) => DISTRICTS.find((d) => d.toLowerCase() === w));
+  if (districts.some((d) => !d)) throw httpError(400, "Choose from Rwanda's districts.");
+  return { districts, district: districts[0], province: provinceOfDistrict(districts[0]) };
+}
+
+const areaOf = (rider) => (rider.districts?.length ? rider.districts : rider.district ? [rider.district] : []);
+
+/** The rider changes the districts they work in. { districts } or { district } */
+async function setArea(user, body = {}) {
+  const rider = await riderOf(user);
+  Object.assign(rider, readArea(body, { required: true }));
+  await rider.save();
+  return { message: `You now deliver in ${rider.districts.join(", ")}.`, rider: riderAccount(rider, await User.findById(idOf(user)).select("Fullname phone").lean()) };
+}
+
 async function register(user, body = {}) {
   if (await Rider.findOne({ user: idOf(user) }).lean()) throw httpError(409, "You're already signed up as a rider.");
   const vehicleType = String(body.vehicleType || "MOTORBIKE").toUpperCase();
@@ -292,7 +357,9 @@ async function register(user, body = {}) {
   const plateNumber = String(body.plateNumber || "").trim().toUpperCase().slice(0, 20);
   // Riders signing themselves up give their plate; an admin adding a rider vouches for them.
   if (!body.approved && ["MOTORBIKE", "CAR"].includes(vehicleType) && plateNumber.length < 4) throw httpError(400, "Enter your plate number.");
-  const rider = await Rider.create({ user: idOf(user), vehicleType, plateNumber: plateNumber || undefined, status: body.approved ? "APPROVED" : "PENDING" });
+  // The district they work in (the sign-up forms ask for it; older apps don't send it).
+  const area = readArea(body);
+  const rider = await Rider.create({ user: idOf(user), vehicleType, plateNumber: plateNumber || undefined, ...area, status: body.approved ? "APPROVED" : "PENDING" });
   if (!body.approved) {
     notifications.adminAlert({ title: "New rider to approve", message: "A rider signed up and is waiting for approval.", link: "/admin/riders" }).catch(() => {});
   }
@@ -353,7 +420,8 @@ async function setAvailability(user, body = {}) {
   return { rider: riderAccount(rider, await User.findById(idOf(user)).select("Fullname phone").lean()), handedBack };
 }
 
-const wasOffered = (delivery, userId) => (delivery.offers || []).some((o) => idOf(o.rider) === userId);
+const wasOffered = (delivery, userId) =>
+  (delivery.offers || []).some((o) => idOf(o.rider) === userId) || (delivery.alerted || []).map(String).includes(userId);
 
 /** Jobs this rider may take: offered to them, or open and within range now. */
 async function listAvailable(user) {
@@ -374,6 +442,23 @@ async function active(user) {
   const rider = await riderOf(user);
   const delivery = await Delivery.findOne({ rider: idOf(user), status: { $in: cfg.ACTIVE } }).sort({ assignedAt: -1 }).lean();
   return { delivery: delivery ? await serialize(delivery, { rider, reveal: true }) : null };
+}
+
+/** One parcel, for the rider who opened its notification. */
+async function offerFor(user, deliveryId) {
+  const rider = await riderOf(user);
+  const me = idOf(user);
+  const delivery = await Delivery.findById(deliveryId).lean();
+  if (!delivery) throw httpError(404, "This delivery no longer exists.");
+  if (idOf(delivery.rider) === me) {
+    return { delivery: await serialize(delivery, { rider, reveal: true }), mine: true, canTake: false, online: Boolean(rider.isOnline) };
+  }
+  if (delivery.status === "CANCELLED") throw httpError(410, "The buyer's order was cancelled, so this parcel isn't needed.", "OFFER_GONE");
+  if (delivery.rider || delivery.status !== "READY_FOR_PICKUP") throw httpError(410, "Another rider already took this parcel.", "OFFER_GONE");
+  if ((delivery.rejectedBy || []).map(String).includes(me)) throw httpError(410, "You turned this parcel down.", "OFFER_GONE");
+  const km = rider.lat != null ? cfg.haversineKm(rider.lat, rider.lng, delivery.pickupLat, delivery.pickupLng) : null;
+  const canTake = rider.status === "APPROVED" && (wasOffered(delivery, me) || (km != null && km <= cfg.settings().radiusKm));
+  return { delivery: await serialize(delivery, { rider }), mine: false, canTake, online: Boolean(rider.isOnline) };
 }
 
 async function accept(user, deliveryId) {
@@ -671,6 +756,81 @@ async function cancelForOrder(orderId) {
   }
 }
 
+/**
+ * Parcels no rider took within `sellerFallbackMinutes`: the seller hears it
+ * once and may deliver the parcel itself. Ikiguzi keeps offering it meanwhile.
+ */
+async function checkUnclaimed(now = new Date()) {
+  const before = new Date(now.getTime() - cfg.settings().sellerFallbackMinutes * 60 * 1000);
+  const waiting = await Delivery.find({ status: "READY_FOR_PICKUP", rider: null, sellerAlertedAt: null, createdAt: { $lte: before } });
+  for (const delivery of waiting) {
+    delivery.sellerAlertedAt = now;
+    await delivery.save();
+    notifications.notify(delivery.vendor, {
+      type: "DELIVERY",
+      title: "No rider has taken your parcel yet",
+      message: "Ikiguzi keeps offering it to riders. If you'd rather not wait, deliver it yourself from the order: the delivery fee then goes to you.",
+      link: `/vendor/orders/${idOf(delivery.order)}`,
+    }).catch(() => {});
+  }
+  return waiting.length;
+}
+
+/**
+ * The seller delivers a parcel no rider has taken: the rider job is withdrawn
+ * and the parcel becomes the seller's own delivery (its fee goes to the seller
+ * at hand-over, which the buyer's code confirms as usual).
+ */
+async function sellerDelivers(vendorIds, orderId) {
+  const order = await Order.findById(orderId);
+  if (!order) throw httpError(404, "Order not found.");
+  const ids = vendorIds.map(String);
+  const parcels = [...(order.shippingBreakdown || [])];
+  const at = parcels.findIndex((p) => p.method === "RIDER" && ids.includes(idOf(p.vendor)));
+  const parcel = parcels[at];
+  if (!parcel) throw httpError(409, "This parcel isn't waiting for an Ikiguzi rider.");
+  const vendorId = idOf(parcel.vendor);
+  const delivery = await Delivery.findOne({ order: order._id, vendor: vendorId, status: { $ne: "CANCELLED" } });
+  if (delivery?.rider || (delivery && delivery.status !== "READY_FOR_PICKUP")) {
+    throw httpError(409, "A rider has already accepted this parcel. Ask Ikiguzi support if they can't come.", "RIDER_ASSIGNED");
+  }
+  if (delivery) {
+    delivery.status = "CANCELLED";
+    delivery.history = withHistory(delivery, "CANCELLED", "The seller delivers it");
+    await delivery.save();
+  }
+  parcels[at] = { ...parcel, method: "STANDARD", source: "seller", eta: "The seller delivers it", zoneName: "Seller delivery" };
+  order.shippingBreakdown = parcels;
+  await order.save();
+  socketService.emitOrderStatusUpdate(order);
+  notifications.notify(order.user, {
+    type: "DELIVERY",
+    title: `${parcel.storeName || "The seller"} is delivering your parcel`,
+    message: "Give the seller your 6-digit delivery code only when you have the parcel in hand.",
+    link: `/orders/${idOf(order)}`,
+  }).catch(() => {});
+  return { order };
+}
+
+/**
+ * The buyer paid for a parcel the seller delivers because its store has no
+ * pickup pin: the seller is told how to let Ikiguzi riders carry the next ones.
+ */
+async function nudgePinless(order) {
+  for (const parcel of order.shippingBreakdown || []) {
+    if (!parcel.vendor || ["RIDER", "PICKUP"].includes(parcel.method)) continue;
+    const store = parcel.store ? await Store.findById(parcel.store).select("pickupLat storeName").lean() : null;
+    if (!store || store.pickupLat != null) continue;
+    const owner = await User.findById(idOf(parcel.vendor)).select("role").lean();
+    notifications.notify(parcel.vendor, {
+      type: "DELIVERY",
+      title: "Deliver this order yourself, or pin your store",
+      message: `${store.storeName} has no pickup pin, so no Ikiguzi rider can collect this order: deliver it and confirm with the buyer's code. Put your store on the map so riders carry the next ones.`,
+      link: owner?.role === "supplier" ? "/supplier/settings" : "/vendor/store",
+    }).catch(() => {});
+  }
+}
+
 /** Whether a rider (not the seller) carries this seller's parcel of the order. */
 const isRiderParcel = (order, vendorId) =>
   (order.shippingBreakdown || []).some((p) => p.method === "RIDER" && idOf(p.vendor) === String(vendorId));
@@ -700,7 +860,9 @@ async function reviewRider(riderId, { status, note } = {}) {
 }
 
 module.exports = {
-  createForOrder, orderPaid, markReady, sellerStepped, dispatch, expireStaleOffers, checkLatePickups, cancelForOrder, isRiderParcel,
-  register, profile, updateLocation, setAvailability, listAvailable, active, accept, reject, release, updateStatus, confirm, history, stats, wallet,
+  setArea,
+  createForOrder, orderPaid, markReady, sellerStepped, dispatch, wakeRiders, expireStaleOffers, checkLatePickups, cancelForOrder, isRiderParcel,
+  checkUnclaimed, sellerDelivers,
+  register, profile, updateLocation, setAvailability, listAvailable, active, offerFor, accept, reject, release, updateStatus, confirm, history, stats, wallet,
   listRiders, reviewRider, adminRelease,
 };

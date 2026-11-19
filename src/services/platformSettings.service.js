@@ -21,6 +21,9 @@ const DEFAULTS = {
   disputeResponseDays: 3,
   // Days after delivery a buyer can ask to return items. 0 turns returns off.
   returnWindowDays: 7,
+  // "Advertise here": the flat fee per product, and how long the ad runs.
+  adPricePerProduct: 1000,
+  adDays: 7,
 };
 const LIMITS = {
   autoReleaseDays: [0, 30],
@@ -29,6 +32,8 @@ const LIMITS = {
   freeProductLimit: [1, 10000],
   disputeResponseDays: [1, 14],
   returnWindowDays: [0, 30],
+  adPricePerProduct: [100, 1000000],
+  adDays: [1, 90],
 };
 
 let cache = { value: null, at: 0 };

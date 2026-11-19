@@ -408,6 +408,21 @@ async function advanceFulfilment({ order, status, actor, sellerIds = handover.ve
 // @desc    Seller moves its order forward (processing → shipped → out for delivery)
 // @route   PATCH /api/orders/vendor/status   { orderId, status }
 // @access  Private (Vendor, vendor staff with canManageOrders, Super Admin)
+// @desc    The seller delivers a parcel no Ikiguzi rider has taken yet
+// @route   POST /api/orders/vendor/:id/self-deliver
+// @access  Private (Vendor, vendor staff with canManageOrders, Supplier)
+exports.sellerDeliversItself = async (req, res) => {
+  try {
+    if (!orm.isValidObjectId(req.params.id)) return res.status(400).json({ message: "A valid order ID is required." });
+    const vendorIds = [String(req.user.id)];
+    if (req.vendorId || req.targetVendorId) vendorIds.push(String(req.vendorId || req.targetVendorId));
+    const { order } = await deliveryService.sellerDelivers(vendorIds, req.params.id);
+    return res.status(200).json({ message: "You're delivering this parcel. Confirm it with the buyer's code when you hand it over.", order });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
 exports.updateVendorOrderStatus = async (req, res) => {
   try {
     const { orderId, status, paymentStatus } = req.body;

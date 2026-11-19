@@ -36,6 +36,8 @@ describe("Marketplace features", () => {
   beforeAll(async () => {
     process.env.JWT_SECRET = secret;
     delete process.env.PAYPACK_CLIENT_ID; // sandbox payments
+    // Push is off in tests even when .env holds real Firebase keys.
+    for (const k of ["FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY"]) delete process.env[k];
     await db.setup();
     app = express();
     app.use(express.json());

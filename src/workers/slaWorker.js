@@ -202,8 +202,13 @@ exports.initBackgroundWorkers = () => {
     const deliveries = require("../services/delivery.service");
     deliveries.expireStaleOffers().catch((error) => console.error("[Delivery dispatch] failed:", error.message));
     deliveries.checkLatePickups().catch((error) => console.error("[Late pickups] failed:", error.message));
+    deliveries.checkUnclaimed().catch((error) => console.error("[Unclaimed parcels] failed:", error.message));
     // Buyers waiting for a product to come back or get cheaper.
     require("../services/alerts.service").check().catch((error) => console.error("[Alerts] failed:", error.message));
+    // Released money for people who asked for it to be sent automatically.
+    require("../services/autoPayout.service").runDue()
+      .then((r) => { if (r.sent) console.log(`[Auto payout] ${r.sent} payout(s) sent.`); })
+      .catch((error) => console.error("[Auto payout] failed:", error.message));
   });
   // Returns the seller didn't answer in time go to Ikiguzi (every 30 minutes).
   cron.schedule("*/30 * * * *", () => {

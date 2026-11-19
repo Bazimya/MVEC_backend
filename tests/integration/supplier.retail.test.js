@@ -166,4 +166,18 @@ describe("Suppliers sell published products to buyers", () => {
     await Supplier.updateOne({ _id: supplier._id }, { $set: { status: "ACTIVE" } });
     expect((await request(app).post(`/api/suppliers/me/products/${product._id}/publish`).set(as("warehouse")).send({ price: 8000, units: 5 })).status).toBe(403);
   });
+
+  test("the store's pickup pin and rider delivery reach the shop buyers order from; products carry the bulk flag", async () => {
+    expect((await publish({ price: 9000, units: 5 })).status).toBe(200);
+    const stores = (await request(app).get("/api/suppliers/me/stores").set(as("supplierUser"))).body.stores;
+    const primary = stores.find((st) => st.isPrimary);
+    const noPin = await request(app).put(`/api/suppliers/me/stores/${primary._id}`).set(as("supplierUser")).send({ riderDelivery: true });
+    expect(noPin.status).toBe(400);
+    const res = await request(app).put(`/api/suppliers/me/stores/${primary._id}`).set(as("supplierUser")).send({ pickup: { lat: -1.95, lng: 30.06 }, riderDelivery: true });
+    expect(res.status).toBe(200);
+    const shop = await Store.findOne({ vendor: supplierUser._id }).lean();
+    expect([Number(shop.pickupLat), Number(shop.pickupLng), Boolean(shop.riderDelivery)]).toEqual([-1.95, 30.06, true]);
+    const listed = await request(app).get("/api/products?search=Rice");
+    expect(listed.body.products[0].bulkSeller).toBe(true);
+  });
 });

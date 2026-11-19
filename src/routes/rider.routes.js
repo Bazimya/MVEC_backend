@@ -11,10 +11,12 @@ router.use(protect, authorize("delivery"));
 router.get("/me", rider.me);
 router.patch("/location", rider.location);
 router.patch("/availability", rider.availability);
+router.patch("/area", rider.area); // { district }
 router.get("/stats", rider.stats);
 router.get("/deliveries/available", rider.available);
 router.get("/deliveries/active", rider.active);
 router.get("/deliveries/history", rider.history);
+router.get("/deliveries/:id", rider.offer); // the parcel a notification opens
 router.post("/deliveries/:id/accept", rider.accept);
 router.post("/deliveries/:id/reject", rider.reject);
 router.post("/deliveries/:id/release", rider.release);

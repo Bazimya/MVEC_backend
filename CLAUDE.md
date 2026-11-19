@@ -49,6 +49,13 @@ Tests need MySQL. `tests/helpers/mysql.js` creates and migrates the `_test` data
 - **Seller documents**: `POST /api/uploads/documents` saves an ID or registration paper to `private-uploads/`. Only the owner and admins can read it, through `GET /api/uploads/private/:name`. It's stored in `vendors.documents` or `suppliers.documents` (`utils/sellerDocuments.js`).
 - **Push** (`services/push.service.js`): FCM HTTP v1 with `FIREBASE_PROJECT_ID/CLIENT_EMAIL/PRIVATE_KEY`. Every `notification.service.notify()` is also pushed to the user's devices (`/api/notifications/devices`). It's off without the keys.
 
+## "Advertise here" (`services/adBooking.service.js`, `/api/ad-bookings`)
+
+- This is separate from the pay-per-click campaigns (`advertising.service.js`). Vendors and suppliers pick products and pay `adPricePerProduct` (admin setting, default 1000 RWF) × the number of products by mobile money (standalone payment, purpose `AD_BOOKING`).
+- PAID bookings wait for an admin. Approve makes them LIVE in the home hero (`GET /api/advertisements?placement=HOMEPAGE_HERO` lists them first) for `adDays` (default 7). Reject refunds the paying number through `disbursement.queue`.
+- Ledger: when paid, BUYER_PAYMENTS → ESCROW_HOLDING. On approval, ESCROW_HOLDING → PLATFORM_REVENUE (`AD_PLACEMENT_FEE`). On rejection, ESCROW_HOLDING → BUYER_REFUND_HOLD.
+- `admin.ops getAttention` also counts riders waiting for approval, returns waiting on Ikiguzi, late rider pickups, ready parcels with no rider for 30 minutes, and paid ad bookings.
+
 ## Money
 
 - The buyer pays Ikiguzi, and the money sits in escrow. `services/payment.service.js` locks one settlement per order item, plus one commission-free settlement per parcel's delivery fee.
@@ -56,6 +63,8 @@ Tests need MySQL. `tests/helpers/mysql.js` creates and migrates the `_test` data
 - An order becomes DELIVERED once every seller in it has handed over.
 - When a rider carried a parcel, its fee settlement moves to the rider's wallet (`VendorWallet` keyed by user id) before it is released.
 - `financial.service.js` keeps the double-entry ledger. Never update wallets or settlements anywhere else.
+- At release, each settlement splits into the seller's net (VENDOR_PAYABLE), Ikiguzi's commission (PLATFORM_REVENUE), the affiliate's share (AFFILIATE_COMMISSION) and the provider fee (GATEWAY_FEES).
+- **Automatic payouts** (`services/autoPayout.service.js`, `/api/auto-payouts`, table `payout_preferences`): sellers, suppliers, riders and affiliates can turn on "send automatically" with a mobile money number. Every minute (slaWorker) the available balance goes out through `disbursement.queue`: wallets from 1,000 RWF, affiliates from 10,000 RWF. A failure waits 30 minutes before the next try. Because the money leaves at delivery, a later return can take a seller's balance below zero.
 
 ## Ikiguzi riders (`services/delivery.service.js`, `config/delivery.js`)
 
@@ -75,6 +84,11 @@ This is KitchenLink's delivery-worker model, with one job per seller parcel.
 - Steps are ASSIGNED → PICKED_UP → OUT_FOR_DELIVERY, then `confirm` with the buyer's code.
 - Sellers can't move a rider parcel to shipped or out for delivery. The order follows the rider.
 - Going offline hands parcels not yet picked up back to the pool.
+- Store rider delivery is on by default once a store has a pin (`riderDelivery` default true). Without a store pin or a buyer pin, checkout falls back to the seller delivering; `nudgePinless` tells the seller to pin the store.
+- Wake-ups (`wakeRiders`, every dispatch): approved riders not offered by live position but last seen within range, or working the store's district (`riders.districts`), are notified once per parcel (`deliveries.alerted`) and may take it. Offer notifications link to `/delivery/offers/:id` (`GET /api/rider/deliveries/:id`).
+- No rider after `DELIVERY_SELLER_FALLBACK_MINUTES` (10, `checkUnclaimed` every minute): the seller is told once (`sellerAlertedAt`) and may `POST /api/orders/vendor/:id/self-deliver` while no rider has accepted. The parcel becomes STANDARD and its fee goes to the seller.
+- Maps (`/api/geo`): `GET /search?q=` turns a street into pins in Rwanda (Nominatim, one request a second, cached a day; `GEOCODER_URL`, `GEOCODER_USER_AGENT`). `POST /me {lat,lng}` (sign-in prompt) fills only empty pins: buyer default address, seller/supplier primary store (riders on), rider position; also `preferences.lastPin`.
+- Guest verify with `track: true` (signed-out "follow my order") answers 404 for a number with no account instead of creating one.
 - Late pickup (`checkLatePickups`, every minute): `DELIVERY_PICKUP_MINUTES` after accepting, the rider is reminded `DELIVERY_PICKUP_WARN_MINUTES` before, flagged at the deadline (rider and admins told), and the parcel goes to another rider `DELIVERY_PICKUP_REASSIGN_MINUTES` after it. Admins can hand a parcel back sooner (`POST /api/admin/deliveries/:id/release`).
 
 **Live tracking (`services/tracking.service.js`)**
@@ -83,9 +97,15 @@ This is KitchenLink's delivery-worker model, with one job per seller parcel.
 - Routes come from OSRM (`OSRM_URL`, OpenStreetMap roads, about one call a second, cached), and fall back to straight lines when it's empty or down. Tests set it empty.
 
 **Accounts**
-- Riders sign up with a phone code: `POST /auth/send-otp` → `POST /auth/verify-otp` with `role: "delivery"` → `POST /api/rider/register`. The website (`/signup`, "Delivery worker") and the app (`/rider`) both use this. Riders have no usable password and sign in with a phone code (`purpose: "login"`). Google sign-up never creates riders.
+- Riders sign up with a phone code: `POST /auth/send-otp` → `POST /auth/verify-otp` with `role: "delivery"` → `POST /api/rider/register`. The website (`/signup`, "Delivery worker") and the app (`/rider`) both use this. Riders choose a password at sign-up and sign in with phone and password like everyone else, or with a phone code (`purpose: "login"`). Riders from before this have a random password and `lastPasswordChangeAt: null`. For them `hasPassword` is false, and `change-password` lets them set a first one without a current password. Google sign-up never creates riders.
 - Self sign-ups wait for admin approval (`/api/admin/riders`). An admin's "Add courier" creates an approved rider.
 - Before accepting, a rider sees only the pickup area and fee. The buyer's name, phone and pin appear once the job is theirs.
+
+## Locations
+
+- Supplier stores have a pickup pin and `riderDelivery`, like vendor stores. The primary store's pin is copied to the supplier's buyer-facing shop (`supplierStore.syncShopPickup`, and `supplierRetail.ensureShop`).
+- Riders pick one of Rwanda's 30 districts (`riders.district/province`, `PATCH /api/rider/area`, `config/rwandaLocations.js`). Offers still go by live GPS.
+- Products sent to clients carry `bulkSeller: true` when the seller is a supplier account (product.controller `plain`).
 
 ## Conventions
 

@@ -47,6 +47,7 @@ exports.getAttention = async (_req, res) => {
     const [
       vendors, suppliers, disputes, manualRefunds, failedTransfers, affiliateWithdrawals,
       supplierPayouts, wholesaleDisputes, ads, support, abuse, staleShipments,
+      riders, returns, latePickups, noRider, adBookings,
     ] = await Promise.all([
       Vendor.countDocuments({ verificationStatus: "PENDING" }),
       Supplier.countDocuments({ verificationStatus: "PENDING" }),
@@ -60,6 +61,12 @@ exports.getAttention = async (_req, res) => {
       SupportCase.countDocuments({ status: { $in: ["OPEN", "IN_PROGRESS"] } }),
       AbuseReport.countDocuments({ status: { $in: ["PENDING", "INVESTIGATE"] } }),
       Order.countDocuments({ paymentStatus: "PAID", orderStatus: { $in: ["CONFIRMED", "PROCESSING", "READY_FOR_SHIPMENT"] }, paidAt: { $lte: new Date(Date.now() - 3 * DAY) } }),
+      require("../models/Rider").countDocuments({ status: "PENDING" }),
+      require("../models/ReturnRequest").countDocuments({ status: "ESCALATED" }),
+      require("../models/Delivery").countDocuments({ status: "ASSIGNED", lateAt: { $ne: null } }),
+      // Ready parcels nobody has accepted for 30 minutes.
+      require("../models/Delivery").countDocuments({ status: "READY_FOR_PICKUP", rider: null, readyAt: { $lte: new Date(Date.now() - 30 * 60 * 1000) } }),
+      require("../models/AdBooking").countDocuments({ status: "PAID" }),
     ]);
     const items = [
       { key: "vendors", label: "Sellers waiting for verification", count: vendors, link: "/admin/vendors", urgent: true, hint: "They cannot show as verified until you review them." },
@@ -70,6 +77,11 @@ exports.getAttention = async (_req, res) => {
       { key: "affiliateWithdrawals", label: "Affiliate withdrawals to approve", count: affiliateWithdrawals, link: "/admin/transfers" },
       { key: "supplierPayouts", label: "Supplier bank payouts to send", count: supplierPayouts, link: "/admin/suppliers?tab=payouts" },
       { key: "wholesaleDisputes", label: "Wholesale orders with a reported problem", count: wholesaleDisputes, link: "/admin/suppliers?tab=wholesale", urgent: true, hint: "Pay the supplier or refund the vendor." },
+      { key: "riders", label: "Riders waiting for approval", count: riders, link: "/admin/riders", urgent: true, hint: "They can't take deliveries until you approve them." },
+      { key: "returns", label: "Returns for Ikiguzi to decide", count: returns, link: "/admin/returns", urgent: true, hint: "The seller declined or didn't answer in time." },
+      { key: "latePickups", label: "Rider parcels collected late", count: latePickups, link: "/admin/deliveries", urgent: true, hint: "Hand them to another rider if needed." },
+      { key: "noRider", label: "Ready parcels with no rider for 30 minutes", count: noRider, link: "/admin/deliveries", hint: "No rider nearby accepted yet." },
+      { key: "adBookings", label: "Paid ad bookings to approve", count: adBookings, link: "/admin/advertising", urgent: true, hint: "Approve to put them live, or reject to refund the seller." },
       { key: "ads", label: "Advertisements to approve", count: ads, link: "/admin/advertising" },
       { key: "support", label: "Open support requests", count: support, link: "/admin/support" },
       { key: "abuse", label: "Abuse reports to investigate", count: abuse, link: "/admin/risk" },

@@ -102,7 +102,8 @@ const buildUserResponse = (u, staffDetails = null) => ({
   avatarUrl: u.avatarUrl || "",
   preferences: normalizePreferences(u.preferences),
   email_verified: Boolean(u.email_verified),
-  hasPassword: Boolean(u.password),
+  // A rider who signed up with a code only has a random password nobody knows.
+  hasPassword: Boolean(u.password) && !(u.role === "delivery" && !u.lastPasswordChangeAt),
   googleLinked: Boolean(u.googleId),
   createdAt: u.createdAt,
 });
@@ -649,8 +650,9 @@ exports.changePassword = async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     const user = await User.findById(selfOf(req)._id);
     if (!user) return res.status(404).json({ message: "Account not found." });
-    // Google-only accounts have no password yet and may set one.
-    const settingFirst = !user.password;
+    // Google-only accounts have no password yet and may set one; so may riders
+    // who signed up with a phone code only (their password was never chosen).
+    const settingFirst = !user.password || (user.role === "delivery" && !user.lastPasswordChangeAt);
     if (typeof newPassword !== "string" || newPassword.length < 8 || (!settingFirst && typeof currentPassword !== "string")) {
       return res.status(400).json({ message: settingFirst ? "Choose a password of at least 8 characters." : "Enter your current password and a new password of at least 8 characters." });
     }
@@ -1242,6 +1244,10 @@ exports.guestVerify = async (req, res) => {
     if (!normalizedPhone) return res.status(400).json({ message: "Enter a valid Rwandan phone number." });
     if (!code || !/^\d{6}$/.test(String(code).trim())) return res.status(400).json({ message: "Enter the 6-digit code we sent you." });
     const name = String(fullName || "").trim().slice(0, 120);
+    // "Follow my order" (signed out): only numbers that already ordered.
+    if (req.body?.track && !(await guestAccountFor(normalizedPhone))) {
+      return res.status(404).json({ message: "We found no orders for this number. If you have an Ikiguzi password, sign in instead." });
+    }
     // A name is needed only to create a new guest account; checking it first
     // keeps the code unused if it's missing.
     if (name.length < 2 && !(await guestAccountFor(normalizedPhone))) {

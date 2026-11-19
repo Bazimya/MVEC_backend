@@ -11,6 +11,11 @@ module.exports = [
       plateNumber: str({ len: 20 }),
       status: en(["PENDING", "APPROVED", "REJECTED", "SUSPENDED"], { default: "PENDING", required: true }),
       reviewNote: str({ len: 300 }),
+      // The district the rider works in (Rwanda's 30, config/rwandaLocations.js).
+      province: str({ len: 60 }),
+      district: str({ len: 60 }),
+      // Every district the rider delivers in (district/province are the first).
+      districts: json([]),
       isOnline: bool(false),
       lat: num(),
       lng: num(),
@@ -41,6 +46,10 @@ module.exports = [
       // [{ rider, offeredAt, expiresAt, response: OFFERED|ACCEPTED|DECLINED|EXPIRED }]
       offers: json([]),
       rejectedBy: json([]),
+      // Riders woken for this parcel (last seen nearby, or working its district).
+      alerted: json([]),
+      // When the seller was told no rider took it yet (and may deliver it).
+      sellerAlertedAt: date(),
       offerExpiresAt: date(),
       codeAttempts: int({ required: true, default: 0 }),
       proofPhotoUrl: str({ len: 500 }),

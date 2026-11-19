@@ -119,6 +119,9 @@ app.use("/api/reports", require("./src/routes/report.routes"));
 app.use("/api/advertisements", require("./src/routes/advertisement.routes"));
 app.use("/api/plans", require("./src/routes/plans.routes"));
 app.use("/api/returns", require("./src/routes/returns.routes"));
+app.use("/api/ad-bookings", require("./src/routes/adBooking.routes"));
+app.use("/api/auto-payouts", require("./src/routes/autoPayout.routes"));
+app.use("/api/geo", require("./src/routes/geo.routes"));
 
 // Real-time Server-Sent Events (SSE) stream for browsers
 app.get("/api/events", (req, res) => {

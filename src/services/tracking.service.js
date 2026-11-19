@@ -49,6 +49,9 @@ const waiting = (delivery) => ({
   status: delivery.status,
   statusLabel: cfg.LABELS[delivery.status],
   store: { name: delivery.pickupName },
+  // No rider yet: the seller may deliver it instead (POST /orders/vendor/:id/self-deliver).
+  waitingForRider: delivery.status === "READY_FOR_PICKUP" && !delivery.rider,
+  offeredAt: delivery.createdAt || null,
 });
 
 async function view(delivery, { withSteps = false, withRoute = true } = {}) {

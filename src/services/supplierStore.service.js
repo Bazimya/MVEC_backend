@@ -8,6 +8,7 @@ const SupplierStore = require("../models/SupplierStore");
 const WholesaleProduct = require("../models/WholesaleProduct");
 const StockMovement = require("../models/StockMovement");
 const { MAX_STORES_PER_VENDOR } = require("../utils/vendorStore.util");
+const { readPin } = require("../config/delivery");
 
 const httpError = (status, message) => Object.assign(new Error(message), { statusCode: status });
 const EDITABLE = ["storeName", "logo", "description", "businessCategory", "contactEmail", "contactPhone", "businessAddress"];
@@ -18,10 +19,31 @@ const locationText = (location) => {
   return location.district || location.city || location.province || "";
 };
 
-function fieldsFrom(body = {}) {
+function fieldsFrom(body = {}, current = null) {
   const fields = Object.fromEntries(EDITABLE.filter((k) => body[k] !== undefined).map((k) => [k, typeof body[k] === "string" ? body[k].trim() : body[k]]));
   if (body.city !== undefined) fields.address = { city: String(body.city || "").trim() || "Kigali" };
+  // The pickup pin, where Ikiguzi riders collect parcels (as for vendor stores).
+  const pin = body.pickup !== undefined ? readPin(body.pickup || {}, { label: "store pin" }) : undefined;
+  if (pin) Object.assign(fields, { pickupLat: pin.lat, pickupLng: pin.lng });
+  if (body.riderDelivery !== undefined) {
+    const hasPin = pin || (pin === undefined && current?.pickupLat != null);
+    if (body.riderDelivery && !hasPin) throw httpError(400, "Set the store's pickup pin on the map before using Ikiguzi riders.");
+    fields.riderDelivery = Boolean(body.riderDelivery);
+  }
   return fields;
+}
+
+/**
+ * Buyers order a supplier's marketplace products from the supplier's shop (a
+ * vendor-style Store, supplierRetail.ensureShop). It takes the primary store's
+ * pickup pin and rider delivery so riders can collect those parcels.
+ */
+async function syncShopPickup(supplier, store) {
+  if (!store?.isPrimary) return;
+  const Store = require("../models/Store");
+  const set = { riderDelivery: Boolean(store.riderDelivery) && store.pickupLat != null };
+  if (store.pickupLat != null) Object.assign(set, { pickupLat: store.pickupLat, pickupLng: store.pickupLng });
+  await Store.updateMany({ vendor: supplier.user }, { $set: set });
 }
 
 async function primaryStore(supplier) {
@@ -87,10 +109,11 @@ async function createStore(supplier, body) {
 
 async function updateStore(supplier, id, body) {
   const store = await findOwned(supplier, id);
-  const fields = fieldsFrom(body);
+  const fields = fieldsFrom(body, store);
   if (fields.storeName === "" || fields.contactEmail === "" || fields.contactPhone === "") throw httpError(400, "Store name, email, and phone are required.");
   Object.assign(store, fields);
   await store.save();
+  await syncShopPickup(supplier, store);
   return store;
 }
 
@@ -103,6 +126,7 @@ async function setPrimary(supplier, id) {
   await SupplierStore.updateMany({ supplier: supplier._id, _id: { $ne: store._id } }, { $set: { isPrimary: false } });
   store.isPrimary = true;
   await store.save();
+  await syncShopPickup(supplier, store);
   return store;
 }
 
@@ -155,4 +179,5 @@ async function moveProducts(supplier, { productIds, storeId, note = "", performe
   };
 }
 
-module.exports = { primaryStore, listStores, resolveOwnedStore, createStore, updateStore, setPrimary, removeStore, moveProducts };
+module.exports = {
+  syncShopPickup, primaryStore, listStores, resolveOwnedStore, createStore, updateStore, setPrimary, removeStore, moveProducts };

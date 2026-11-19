@@ -79,6 +79,25 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     return request(app).patch("/api/rider/availability").set(as(who)).send({ isOnline: true });
   };
 
+  test("a rider chooses one of Rwanda's districts to work in", async () => {
+    expect((await request(app).patch("/api/rider/area").set(as("riderA")).send({ district: "Atlantis" })).status).toBe(400);
+    const res = await request(app).patch("/api/rider/area").set(as("riderA")).send({ district: "musanze" });
+    expect(res.status).toBe(200);
+    expect([res.body.rider.district, res.body.rider.province]).toEqual(["Musanze", "Northern Province"]);
+    expect((await request(app).get("/api/rider/me").set(as("riderA"))).body.rider.district).toBe("Musanze");
+  });
+
+  test("a rider delivers in several districts and is woken for any of them", async () => {
+    expect((await request(app).patch("/api/rider/area").set(as("riderA")).send({ districts: ["Kicukiro", "Nowhere"] })).status).toBe(400);
+    const res = await request(app).patch("/api/rider/area").set(as("riderA")).send({ districts: ["kicukiro", "Gasabo", "Kicukiro"] });
+    expect(res.status).toBe(200);
+    expect(res.body.rider.districts).toEqual(["Kicukiro", "Gasabo"]);
+    await Store.updateMany({ vendor: vendor._id }, { "address.city": "Gasabo" });
+    await paidOrder();
+    const [job] = await Delivery.find({}).lean();
+    expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
+  });
+
   test("checkout prices a rider parcel by distance from the store pin to the buyer's pin", async () => {
     const id = await paidOrder();
     const saved = await Order.findById(id);
@@ -329,5 +348,64 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     // Never offered to that rider again.
     expect((await request(app).get("/api/rider/deliveries/available").set(as("riderA"))).body.deliveries).toHaveLength(0);
     expect((await request(app).post(`/api/rider/deliveries/${offer.id}/release`).set(as("riderA"))).status).toBe(404);
+  });
+
+  test("an offline rider last seen near the store is woken, opens the parcel from the notification and takes it", async () => {
+    const Notification = require("../../src/models/Notification");
+    expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
+    expect((await request(app).patch("/api/rider/availability").set(as("riderA")).send({ isOnline: false })).status).toBe(200);
+    await paidOrder();
+    const [job] = await Delivery.find({}).lean();
+    expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
+    await new Promise((r) => setTimeout(r, 200)); // notifications are sent in the background
+    const note = await Notification.findOne({ recipient: riderA._id, link: `/delivery/offers/${job._id}` }).lean();
+    expect(note?.title).toMatch(/waiting near you/);
+
+    const opened = await request(app).get(`/api/rider/deliveries/${job._id}`).set(as("riderA"));
+    expect(opened.status).toBe(200);
+    expect([opened.body.canTake, opened.body.online, opened.body.mine]).toEqual([true, false, false]);
+
+    expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
+    expect((await request(app).post(`/api/rider/deliveries/${job._id}/accept`).set(as("riderA"))).status).toBe(200);
+    expect((await request(app).get(`/api/rider/deliveries/${job._id}`).set(as("riderA"))).body.mine).toBe(true);
+  });
+
+  test("a rider working the store's district is woken even with no position yet", async () => {
+    await Store.updateMany({ vendor: vendor._id }, { "address.city": "Gasabo" });
+    expect((await request(app).patch("/api/rider/area").set(as("riderA")).send({ district: "Gasabo" })).status).toBe(200);
+    await paidOrder();
+    const [job] = await Delivery.find({}).lean();
+    expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
+  });
+
+  test("no rider takes it: the seller is told and delivers it, earning the fee", async () => {
+    const id = await paidOrder();
+    const fee = (await Order.findById(id)).shippingBreakdown[0].fee;
+    const [job] = await Delivery.find({}).lean();
+    // Too early: nobody is told yet.
+    expect(await deliveryService.checkUnclaimed()).toBe(0);
+    expect(await deliveryService.checkUnclaimed(new Date(Date.now() + 11 * 60 * 1000))).toBe(1);
+    expect(await deliveryService.checkUnclaimed(new Date(Date.now() + 12 * 60 * 1000))).toBe(0);
+
+    const took = await request(app).post(`/api/orders/vendor/${id}/self-deliver`).set(as("vendor"));
+    expect(took.status).toBe(200);
+    expect((await Delivery.findById(job._id)).status).toBe("CANCELLED");
+    const saved = await Order.findById(id);
+    expect(saved.shippingBreakdown[0].method).toBe("STANDARD");
+    expect(saved.shippingBreakdown[0].fee).toBe(fee);
+    // Now the seller moves it on, and no rider can take it.
+    expect((await request(app).patch("/api/orders/vendor/status").set(as("vendor")).send({ orderId: id, status: "SHIPPED" })).status).toBe(200);
+    expect((await request(app).get(`/api/rider/deliveries/${job._id}`).set(as("riderA"))).status).toBe(410);
+    expect((await request(app).post(`/api/orders/vendor/${id}/self-deliver`).set(as("vendor"))).status).toBe(409);
+  });
+
+  test("the seller can't take a parcel back once a rider accepted it", async () => {
+    expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
+    const id = await paidOrder();
+    const [job] = await Delivery.find({}).lean();
+    expect((await request(app).post(`/api/rider/deliveries/${job._id}/accept`).set(as("riderA"))).status).toBe(200);
+    const res = await request(app).post(`/api/orders/vendor/${id}/self-deliver`).set(as("vendor"));
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/already accepted/);
   });
 });

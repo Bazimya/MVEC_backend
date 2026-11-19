@@ -32,7 +32,8 @@ module.exports = (sequelize) => {
     // Where riders collect parcels, and whether this store uses Ikiguzi riders.
     pickupLat: { type: DataTypes.DOUBLE, allowNull: true, get() { const v = this.getDataValue("pickupLat"); return v == null ? v : Number(v); } },
     pickupLng: { type: DataTypes.DOUBLE, allowNull: true, get() { const v = this.getDataValue("pickupLng"); return v == null ? v : Number(v); } },
-    riderDelivery: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    // On by default: a store with a pin gets Ikiguzi riders unless it turns them off.
+    riderDelivery: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   }, { tableName: "stores", timestamps: true });
 
   Store.associate = (m) => {

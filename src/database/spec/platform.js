@@ -572,6 +572,10 @@ module.exports = [
       "address.city": str({ len: 120, default: "Kigali" }),
       businessAddress: str({ len: 255, default: "" }),
       status: en(["ACTIVE", "CLOSED"], { default: "ACTIVE", required: true }),
+      // Where riders collect parcels; copied to the supplier's buyer-facing shop.
+      pickupLat: num(),
+      pickupLng: num(),
+      riderDelivery: bool(true),
     },
   },
   {
@@ -681,6 +685,47 @@ module.exports = [
       token: str({ len: 500, required: true, unique: true }),
       platform: en(["ANDROID", "IOS", "WEB"], { default: "ANDROID", required: true }),
       lastSeenAt: date(),
+    },
+  },
+  {
+    // "Advertise here": a seller or supplier pays a flat fee per product for a
+    // spot in the home page hero; Ikiguzi approves it (or rejects and refunds).
+    model: "AdBooking", table: "ad_bookings", collection: "adbookings",
+    fields: {
+      bookingNumber: str({ len: 40, required: true, unique: true }),
+      seller: ref("users", { required: true, index: true, fk: false }),
+      sellerRole: en(["vendor", "supplier", "super_admin"], { default: "vendor", required: true }),
+      // [{ id, name, image }]
+      products: json([]),
+      placement: en(["HOMEPAGE_HERO"], { default: "HOMEPAGE_HERO", required: true }),
+      pricePerProduct: money({ required: true }),
+      amount: money({ required: true }),
+      days: int({ required: true, default: 7 }),
+      status: en(["AWAITING_PAYMENT", "PAID", "LIVE", "REJECTED", "ENDED", "CANCELLED"], { default: "AWAITING_PAYMENT", required: true, index: true }),
+      payment: ref("payments", { fk: false }),
+      payerPhone: str({ len: 30 }),
+      paidAt: date(),
+      startsAt: date(),
+      endsAt: date(),
+      reviewedBy: ref("users", { fk: false }),
+      reviewedAt: date(),
+      rejectionReason: str({ len: 500 }),
+      refund: ref("disbursements", { fk: false }),
+    },
+  },
+  {
+    // Automatic payouts: once money is released to a seller, supplier, rider or
+    // affiliate, it is sent to this mobile money number without a request
+    // (services/autoPayout.service.js, every minute).
+    model: "PayoutPreference", table: "payout_preferences", collection: "payoutpreferences",
+    fields: {
+      user: ref("users", { required: true, unique: true, onDelete: "CASCADE" }),
+      auto: bool({ required: true, default: false }),
+      method: en(["MTN_MOMO", "AIRTEL_MONEY"], { default: "MTN_MOMO", required: true }),
+      phone: str({ len: 30 }),
+      accountName: str({ len: 100 }),
+      lastSentAt: date(),
+      lastError: str({ len: 300 }),
     },
   },
 ];

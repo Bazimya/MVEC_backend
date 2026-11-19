@@ -252,7 +252,7 @@ module.exports = [
       creditAccount: ref("ledger_accounts", { required: true }),
       amount: money({ required: true }),
       currency: str({ len: 8, default: "RWF", required: true }),
-      entryType: en(["PAYMENT_ESCROW_LOCK", "ESCROW_RELEASE_VENDOR", "PLATFORM_COMMISSION_DEDUCTION", "COURIER_FEE_PAYOUT", "BUYER_REFUND", "ADMIN_MANUAL_ADJUSTMENT", "AFFILIATE_COMMISSION", "PAYMENT_RECEIVED", "PAYOUT_SENT", "AD_BUDGET_RESERVED", "AD_BUDGET_RETURNED", "AD_CLICK_REVENUE", "SUBSCRIPTION_FEE", "GATEWAY_FEE"], { required: true }),
+      entryType: en(["PAYMENT_ESCROW_LOCK", "ESCROW_RELEASE_VENDOR", "PLATFORM_COMMISSION_DEDUCTION", "COURIER_FEE_PAYOUT", "BUYER_REFUND", "ADMIN_MANUAL_ADJUSTMENT", "AFFILIATE_COMMISSION", "PAYMENT_RECEIVED", "PAYOUT_SENT", "AD_BUDGET_RESERVED", "AD_BUDGET_RETURNED", "AD_CLICK_REVENUE", "SUBSCRIPTION_FEE", "GATEWAY_FEE", "AD_PLACEMENT_FEE"], { required: true }),
       relatedOrder: ref("orders", { fk: false, index: true }),
       description: text({ required: true }),
     },

@@ -66,6 +66,12 @@ router.patch(
   sellerOrders("canManageOrders"),
   updateVendorOrderStatus,
 );
+router.post(
+  "/vendor/:id/self-deliver",
+  authorize("vendor", "supplier"),
+  sellerOrders("canManageOrders"),
+  require("../controllers/order.controller").sellerDeliversItself,
+);
 router.patch(
   "/:id/status",
   protect,

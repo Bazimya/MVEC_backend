@@ -47,6 +47,8 @@ async function ensureShop(supplier) {
     businessAddress: from.businessAddress || from.address?.city || "",
     location: from.address?.city || "Kigali",
     status: "ACTIVE",
+    // Riders collect from the supplier's pickup pin (supplierStore.syncShopPickup).
+    ...(from.pickupLat != null ? { pickupLat: from.pickupLat, pickupLng: from.pickupLng, riderDelivery: Boolean(from.riderDelivery) } : {}),
   });
 }
 
@@ -93,7 +95,7 @@ async function record({ supplier, wholesale, listing, units, toMarketplace, perf
  * `units` from wholesale stock onto it. { price, units }
  */
 async function publish(supplier, productId, { price, units: rawUnits, performedBy } = {}) {
-  if (supplier.status !== "ACTIVE") throw httpError(403, "Your supplier account is paused, so you can't put products on the marketplace.");
+  if (supplier.status !== "ACTIVE") throw httpError(403, "Ikiguzi has suspended your supplier account, so you can't put products on the marketplace. Contact Ikiguzi support to have it reactivated.");
   // Before Ikiguzi verifies the supplier the listing is made but waits (listingApproval.service).
   const live = (stockAfter) => (supplier.verificationStatus === "VERIFIED" ? (stockAfter > 0 ? "ACTIVE" : "OUT_OF_STOCK") : "PENDING_APPROVAL");
   const wholesale = await ownedProduct(supplier, productId);

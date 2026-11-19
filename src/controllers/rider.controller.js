@@ -42,10 +42,15 @@ exports.register = async (req, res) => {
       return res.status(409).json({ message: "This phone number already has an Ikiguzi account. Sign in instead." });
     }
     const email = String(req.body.email || "").trim().toLowerCase() || undefined;
+    // Riders choose a password, so they can sign in with phone + password like
+    // everyone else (a phone code still works too).
+    const password = typeof req.body.password === "string" ? req.body.password : "";
+    if (password && password.length < 8) return res.status(400).json({ message: "Choose a password of at least 8 characters." });
     const user = await User.create({
       Fullname: fullName, phone: `0${phone.slice(4)}`, email, role: "delivery", isOnboarded: true,
-      // Riders sign in with a phone code; this password is never used (they can set one with "Forgot password").
-      password: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10),
+      // Without one (older apps), an unusable random password: they set theirs later from their profile.
+      password: await bcrypt.hash(password || crypto.randomBytes(32).toString("hex"), 10),
+      lastPasswordChangeAt: password ? new Date() : null,
     });
     await deliveryService.register(user, req.body);
     return res.status(201).json({
@@ -62,8 +67,10 @@ exports.register = async (req, res) => {
 exports.me = run((req) => deliveryService.profile(req.user));
 exports.location = run((req) => deliveryService.updateLocation(req.user, req.body));
 exports.availability = run((req) => deliveryService.setAvailability(req.user, req.body));
+exports.area = run((req) => deliveryService.setArea(req.user, req.body));
 exports.available = run((req) => deliveryService.listAvailable(req.user));
 exports.active = run((req) => deliveryService.active(req.user));
+exports.offer = run((req) => deliveryService.offerFor(req.user, req.params.id));
 exports.history = run((req) => deliveryService.history(req.user, req.query));
 exports.stats = run((req) => deliveryService.stats(req.user));
 exports.wallet = run((req) => deliveryService.wallet(req.user));

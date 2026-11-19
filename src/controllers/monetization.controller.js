@@ -806,6 +806,13 @@ exports.listLiveAdvertisements = async (req, res) => {
 
     const seen = new Set();
     const data = [];
+    // Paid "Advertise here" bookings come first in the hero.
+    if (placement === "HOMEPAGE_HERO") {
+      for (const booked of await require("../services/adBooking.service").liveHeroProducts(limit)) {
+        seen.add(String(booked.product._id));
+        data.push(booked);
+      }
+    }
     for (const ad of ads) {
       const product = ad.productId;
       if (!product || !ad.vendor) continue;

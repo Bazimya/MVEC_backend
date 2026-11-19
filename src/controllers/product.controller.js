@@ -12,6 +12,8 @@ const { dealView } = require("../utils/pricing.util");
 const plain = (doc) => {
   const out = doc && doc.toJSON ? doc.toJSON() : { ...doc };
   out.deal = dealView(out);
+  // Sold by a supplier: buyers see a "Supplier · buys in bulk welcome" flag.
+  out.bulkSeller = out.vendor?.role === "supplier";
   return out;
 };
 
@@ -134,7 +136,7 @@ exports.getAllProducts = async (req, res) => {
     // Cost prices are the seller's private margins; never on public routes.
     let cursor = Product.find(query)
       .select("-costPrice")
-      .populate("vendor", "Fullname companyName")
+      .populate("vendor", "Fullname companyName role")
       .populate("category", "name slug")
       .sort({ createdAt: -1 });
 
@@ -370,7 +372,7 @@ exports.getProductById = async (req, res) => {
     // id (MVEC-PRD-…); dashboards use the database id.
     const { id } = req.params;
     const product = await Product.findOne(orm.isValidObjectId(id) ? { _id: id } : { publicId: String(id) })
-      .populate("vendor", "Fullname companyName")
+      .populate("vendor", "Fullname companyName role")
       .populate("category", "name slug");
 
     // Drafts and hidden products are visible only to their seller and admins.
@@ -401,7 +403,7 @@ exports.getProductBySlug = async (req, res) => {
   try {
     const product = await Product.findOne({ slug: String(req.params.slug), status: { $in: ["ACTIVE", "OUT_OF_STOCK"] } })
       .select("-costPrice")
-      .populate("vendor", "Fullname companyName")
+      .populate("vendor", "Fullname companyName role")
       .populate("category", "name slug");
 
     if (!product) {
@@ -427,7 +429,7 @@ exports.getRecommendations = async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 8, 1), 24);
     const PUBLIC_FIELDS = "-costPrice";
-    const populate = (q) => q.populate("vendor", "companyName logoUrl").populate("category", "name slug");
+    const populate = (q) => q.populate("vendor", "companyName logoUrl role").populate("category", "name slug");
 
     let picks = [];
     let personalized = false;
@@ -523,7 +525,7 @@ exports.getDeals = async (req, res) => {
     const soon = new Date(now.getTime() + 24 * 3600 * 1000);
     const rows = await Product.find({ status: "ACTIVE", dealPrice: { $gt: 0 }, dealEndsAt: { $gt: now }, dealStartsAt: { $lte: soon } })
       .select("-costPrice")
-      .populate("vendor", "Fullname companyName")
+      .populate("vendor", "Fullname companyName role")
       .populate("category", "name slug")
       .sort({ dealEndsAt: 1 })
       .limit(100);

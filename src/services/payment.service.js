@@ -249,6 +249,8 @@ exports.fulfilStandalonePayment = async (payment) => {
   if (payment.purpose === "BUYER_PREMIUM" && payment.user) {
     await require("./buyerSubscription.service").activatePremium({ userId: payment.user, paymentId: payment._id });
   }
+  // A seller paid for home page ad spots (reference ADB-<bookingId>-…).
+  if (payment.purpose === "AD_BOOKING") await require("./adBooking.service").markPaid(payment);
   // A vendor paid a wholesale order (reference WHS-<orderId>-…): lock it in escrow.
   if (payment.purpose === "WHOLESALE") {
     const orderId = String(payment.transactionReference || "").split("-")[1];
