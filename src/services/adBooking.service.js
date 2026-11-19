@@ -84,7 +84,6 @@ async function create(user, { productIds = [], phoneNumber } = {}) {
     await booking.save();
     throw error;
   }
-  // Only the payment link: a test-mode payment has already marked it paid.
   await AdBooking.updateOne({ _id: booking._id }, { $set: { payment: String(result.paymentId) } });
   const fresh = await AdBooking.findById(booking._id);
   return {
@@ -199,20 +198,23 @@ async function reject(admin, id, { reason = "" } = {}) {
 /** Live booked products for the home hero: [{ id, placement, product }]. */
 async function liveHeroProducts(limit = 6) {
   await endExpired();
-  const now = new Date();
-  const live = await AdBooking.find({ status: "LIVE", startsAt: { $lte: now }, endsAt: { $gt: now } }).sort({ startsAt: -1 }).limit(50).lean();
-  const ids = [...new Set(live.flatMap((b) => (b.products || []).map((p) => p.id)))];
+  const live = await AdBooking.find({ status: "LIVE" }).sort({ startsAt: -1 }).limit(50).lean();
+  const ids = [...new Set(live.flatMap((b) => (b.products || []).map((p) => idOf(p.id)).filter(Boolean)))];
   if (!ids.length) return [];
   const products = await Product.find({ _id: { $in: ids }, status: "ACTIVE" })
     .select("name price discountPrice dealPrice dealStartsAt dealEndsAt dealQuantity dealSold media stockQuantity status vendor category averageRating reviewCount publicId")
     .populate("vendor", "Fullname companyName")
-    .populate("category", "name slug");
+    .populate("category", "name slug")
+    .lean();
   const byId = new Map(products.map((p) => [idOf(p), p]));
   const out = [];
   for (const b of live) {
     for (const p of b.products || []) {
-      const product = byId.get(p.id);
-      if (product && !out.some((o) => idOf(o.product) === p.id)) out.push({ id: b.bookingNumber, placement: "HOMEPAGE_HERO", product });
+      const productId = idOf(p.id);
+      const product = byId.get(productId);
+      if (product && !out.some((o) => idOf(o.product) === productId)) {
+        out.push({ id: b.bookingNumber, placement: "HOMEPAGE_HERO", product });
+      }
       if (out.length >= limit) return out;
     }
   }
