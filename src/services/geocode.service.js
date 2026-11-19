@@ -77,8 +77,38 @@ async function approximate(address = {}) {
   return null;
 }
 
+const districtCache = new Map(); // "lat,lng" (3 decimals, ~100 m) -> district | null
+
+/**
+ * Which of Rwanda's 30 districts a pin is in (OpenStreetMap reverse lookup),
+ * or null. Stores often write only "Kigali", so riders working a district
+ * are matched through the store's pin instead.
+ */
+async function districtOf(lat, lng) {
+  if (!module.exports.enabled() || lat == null || lng == null) return null;
+  const key = `${Number(lat).toFixed(3)},${Number(lng).toFixed(3)}`;
+  if (districtCache.has(key)) return districtCache.get(key);
+  const { DISTRICTS } = require("../config/rwandaLocations");
+  const reverseUrl = URL.replace(/\/search$/, "/reverse");
+  const params = new URLSearchParams({ lat: String(lat), lon: String(lng), format: "jsonv2", zoom: "10", addressdetails: "1" });
+  let district = null;
+  try {
+    const row = await throttled(async () => {
+      const res = await fetch(`${reverseUrl}?${params}`, { headers: { "User-Agent": USER_AGENT, "Accept-Language": "en" }, signal: AbortSignal.timeout(6000) });
+      return res.ok ? res.json() : null;
+    });
+    const words = Object.values(row?.address || {}).concat(row?.display_name || "").join(" ").toLowerCase();
+    district = DISTRICTS.find((d) => words.includes(d.toLowerCase())) || null;
+  } catch {
+    return null; // not cached: try again next time
+  }
+  if (districtCache.size > 2000) districtCache.clear();
+  districtCache.set(key, district);
+  return district;
+}
+
 // Off in tests unless a test turns it on; off when GEOCODER_URL=off.
 let testEnabled = false;
 const enabled = () => process.env.GEOCODER_URL !== "off" && (process.env.NODE_ENV !== "test" || testEnabled);
 
-module.exports = { search, approximate, enabled, enableInTests: (on = true) => { testEnabled = on; }, _cache: cache };
+module.exports = { search, approximate, districtOf, enabled, enableInTests: (on = true) => { testEnabled = on; }, _cache: cache, _districtCache: districtCache };

@@ -253,26 +253,30 @@ async function dispatch(deliveryId) {
       sms: `Ikiguzi: new delivery at ${delivery.pickupName} (${money(delivery.fee)}). Open the app to accept.`,
     }).catch(() => {});
   }
-  await wakeRiders(delivery, new Set([...asked, ...candidates.map((c) => idOf(c.rider.user))])).catch((e) => console.error("[Delivery wake] failed:", e.message));
+  await wakeRiders(delivery, new Set([...asked, ...candidates.map((c) => idOf(c.rider.user))]), { widen: !candidates.length && !asked.size }).catch((e) => console.error("[Delivery wake] failed:", e.message));
   return candidates.map((c) => idOf(c.rider.user));
 }
 
 /**
  * Riders who can't be offered the parcel by position yet but are probably
  * close: last seen within range (an old position, or offline), or working the
- * store's district. Each is woken once per parcel and may then take it.
+ * store's district (from its address, or looked up from its pin). With
+ * `widen` (nobody in range), riders last seen up to twice the range count too.
+ * Each is woken once per parcel and may then take it.
  */
-async function wakeRiders(delivery, skip) {
+async function wakeRiders(delivery, skip, { widen = false } = {}) {
   const s = cfg.settings();
   const already = new Set((delivery.alerted || []).map(String));
   const busy = new Set((await Delivery.find({ status: { $in: cfg.ACTIVE } }).select("rider").lean()).map((d) => idOf(d.rider)));
   const store = delivery.store ? await Store.findById(delivery.store).select("address businessAddress").lean() : null;
-  const place = [store?.address?.city, store?.businessAddress, delivery.pickupAddress].filter(Boolean).join(" ").toLowerCase();
+  const pinDistrict = await require("./geocode.service").districtOf(delivery.pickupLat, delivery.pickupLng).catch(() => null);
+  const place = [pinDistrict, store?.address?.city, store?.businessAddress, delivery.pickupAddress].filter(Boolean).join(" ").toLowerCase();
+  const reach = s.radiusKm * (widen ? 2 : 1);
   const riders = await Rider.find({ status: "APPROVED" }).lean();
   const woken = riders
     .filter((r) => { const id = idOf(r.user); return !skip.has(id) && !already.has(id) && !busy.has(id); })
     .map((r) => ({ r, km: r.lat != null ? cfg.haversineKm(r.lat, r.lng, delivery.pickupLat, delivery.pickupLng) : null }))
-    .filter(({ r, km }) => (km != null && km <= s.radiusKm) || areaOf(r).some((d) => place.includes(String(d).toLowerCase())))
+    .filter(({ r, km }) => (km != null && km <= reach) || areaOf(r).some((d) => place.includes(String(d).toLowerCase())))
     .slice(0, s.maxOfferRecipients);
   if (!woken.length) return [];
   await Delivery.updateOne({ _id: idOf(delivery) }, { $set: { alerted: [...already, ...woken.map(({ r }) => idOf(r.user))] } });

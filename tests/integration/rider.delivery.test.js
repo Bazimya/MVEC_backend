@@ -432,4 +432,30 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
       geocode.enableInTests(false);
     }
   });
+
+  test("nobody in range: a rider last seen a little farther is woken", async () => {
+    // About 12 km from the store: past the 8 km offer range, inside twice it.
+    expect((await goOnline("riderA", { lat: -2.0, lng: 30.02 })).status).toBe(200);
+    await paidOrder();
+    const [job] = await Delivery.find({}).lean();
+    expect((job.offers || []).length).toBe(0);
+    expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
+  });
+
+  test("the store's district comes from its pin when its address only says Kigali", async () => {
+    const geocode = require("../../src/services/geocode.service");
+    const realFetch = global.fetch;
+    geocode._districtCache.clear();
+    geocode.enableInTests(true);
+    global.fetch = async (url) => ({ ok: true, json: async () => (String(url).includes("/reverse") ? { address: { county: "Gasabo", state: "Kigali City" } } : []) });
+    try {
+      expect((await request(app).patch("/api/rider/area").set(as("riderA")).send({ districts: ["Gasabo"] })).status).toBe(200);
+      await paidOrder();
+      const [job] = await Delivery.find({}).lean();
+      expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
+    } finally {
+      global.fetch = realFetch;
+      geocode.enableInTests(false);
+    }
+  });
 });
