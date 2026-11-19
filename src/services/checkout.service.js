@@ -264,6 +264,11 @@ async function createOrder({ userId, lines: rawLines, delivery, paymentMethod, v
   if (!quote.deliverable) {
     throw httpError(400, `${quote.groups.filter((g) => !g.deliverable).map((g) => g.message).join(" ")} Remove those items or choose another address.`);
   }
+  // The rider delivers to the typed address's pin when the buyer placed none.
+  if (quote.approximatePin && parsed.shippingAddress.lat == null) {
+    parsed.shippingAddress.lat = quote.approximatePin.lat;
+    parsed.shippingAddress.lng = quote.approximatePin.lng;
+  }
   let shippingFee = quote.shippingFee;
   let shippingBreakdown = quote.groups.map((g) => ({
     vendor: g.vendor, store: g.store, storeName: g.storeName, zone: g.zone, zoneName: g.zoneName,

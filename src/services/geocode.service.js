@@ -52,4 +52,33 @@ async function search(q) {
   return results;
 }
 
-module.exports = { search, _cache: cache };
+/**
+ * A pin for a typed delivery address with no pin of its own: the street with
+ * its sector and district, then the sector, then the district. null when the
+ * search finds nothing (or is off: tests, GEOCODER_URL=off).
+ */
+async function approximate(address = {}) {
+  if (!module.exports.enabled()) return null;
+  const district = address.district || address.city;
+  if (!district) return null;
+  const tries = [
+    [address.street, address.sector, district],
+    [address.sector, district],
+    [district],
+  ].map((parts) => parts.filter(Boolean).join(", ")).filter((q, i, all) => q && all.indexOf(q) === i);
+  for (const q of tries) {
+    try {
+      const [best] = await search(`${q}, Rwanda`);
+      if (best) return { lat: best.lat, lng: best.lng, label: best.label, from: q };
+    } catch {
+      return null; // the map search is down: no pin, the seller delivers
+    }
+  }
+  return null;
+}
+
+// Off in tests unless a test turns it on; off when GEOCODER_URL=off.
+let testEnabled = false;
+const enabled = () => process.env.GEOCODER_URL !== "off" && (process.env.NODE_ENV !== "test" || testEnabled);
+
+module.exports = { search, approximate, enabled, enableInTests: (on = true) => { testEnabled = on; }, _cache: cache };

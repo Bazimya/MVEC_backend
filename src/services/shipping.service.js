@@ -126,7 +126,15 @@ exports.quoteShipping = async ({ lines, address, method = "STANDARD" }) => {
   const stores = await Store.find({ _id: { $in: storeIds } }).select("storeName pickupLat pickupLng riderDelivery").lean();
   const storeNames = Object.fromEntries(stores.map((s) => [String(s._id), s.storeName]));
   const storeById = new Map(stores.map((s) => [String(s._id), s]));
-  const drop = address?.lat != null && address?.lng != null ? { lat: Number(address.lat), lng: Number(address.lng) } : null;
+  let drop = address?.lat != null && address?.lng != null ? { lat: Number(address.lat), lng: Number(address.lng) } : null;
+  // No door pin, but a store here uses Ikiguzi riders: pin the typed address
+  // (street, sector, district) so riders are still offered the parcel. The
+  // rider gets the full address and the buyer's phone once they accept.
+  let approximatePin = null;
+  if (!drop && requested !== "PICKUP" && stores.some((s) => s.riderDelivery && s.pickupLat != null)) {
+    approximatePin = await require("./geocode.service").approximate(address || {});
+    if (approximatePin) drop = { lat: approximatePin.lat, lng: approximatePin.lng };
+  }
 
   // The buyer collects the order from each store: no delivery fee, and the
   // buyer's address doesn't matter.
@@ -175,6 +183,8 @@ exports.quoteShipping = async ({ lines, address, method = "STANDARD" }) => {
   return {
     address: where,
     method: requested,
+    // Set when the drop pin came from the typed address (checkout saves it on the order).
+    approximatePin,
     deliverable: groups.every((g) => g.deliverable),
     shippingFee: groups.reduce((s, g) => s + g.fee, 0),
     groups,

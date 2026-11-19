@@ -408,4 +408,28 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     expect(res.status).toBe(409);
     expect(res.body.message).toMatch(/already accepted/);
   });
+
+  test("a buyer who typed the address but placed no pin still gets an Ikiguzi rider", async () => {
+    const geocode = require("../../src/services/geocode.service");
+    const realFetch = global.fetch;
+    geocode._cache.clear();
+    geocode.enableInTests(true);
+    global.fetch = async () => ({ ok: true, json: async () => [{ display_name: "KG 11 Avenue, Remera, Gasabo, Rwanda", lat: String(BUYER.lat), lon: String(BUYER.lng) }] });
+    try {
+      expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
+      const { lat, lng, ...typed } = order.shippingAddress;
+      const bought = await request(app).post("/api/orders/direct-checkout").set(as("buyer")).send({ ...order, shippingAddress: typed, items: [{ productId: String(product._id), quantity: 1 }] });
+      expect(bought.status).toBe(201);
+      const id = bought.body.order.id;
+      expect((await request(app).post("/api/payments/pay").set(as("buyer")).send({ orderId: id, phoneNumber: "0788123456" })).body.status).toBe("SUCCESS");
+      const saved = await Order.findById(id);
+      expect(saved.shippingBreakdown[0].method).toBe("RIDER");
+      expect(Math.abs(saved.shippingAddress.lat - BUYER.lat) < 1e-6).toBe(true);
+      const offers = await request(app).get("/api/rider/deliveries/available").set(as("riderA"));
+      expect(offers.body.deliveries).toHaveLength(1);
+    } finally {
+      global.fetch = realFetch;
+      geocode.enableInTests(false);
+    }
+  });
 });
