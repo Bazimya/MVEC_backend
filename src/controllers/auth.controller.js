@@ -1236,17 +1236,36 @@ exports.guestSendCode = async (req, res) => {
   return exports.sendOtp(req, res);
 };
 
-// @route POST /api/auth/guest/verify   { phone, code, fullName, email? }
+// @route GET /api/auth/phone-codes → { required }: whether screens ask for a phone code.
+exports.phoneCodes = (req, res) => res.status(200).json({ required: require("../config/phoneCodes").required() });
+
+// @route POST /api/auth/guest/verify   { phone, code, fullName, email?, track?, orderNumber? }
 exports.guestVerify = async (req, res) => {
   try {
     const { phone, code, fullName, email } = req.body || {};
     const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) return res.status(400).json({ message: "Enter a valid Rwandan phone number." });
-    if (!code || !/^\d{6}$/.test(String(code).trim())) return res.status(400).json({ message: "Enter the 6-digit code we sent you." });
+    // Without SMS (config/phoneCodes.js) the phone number alone is enough.
+    const codes = require("../config/phoneCodes").required();
+    if (codes && (!code || !/^\d{6}$/.test(String(code).trim()))) return res.status(400).json({ message: "Enter the 6-digit code we sent you." });
     const name = String(fullName || "").trim().slice(0, 120);
     // "Follow my order" (signed out): only numbers that already ordered.
-    if (req.body?.track && !(await guestAccountFor(normalizedPhone))) {
+    const account = await guestAccountFor(normalizedPhone);
+    if (req.body?.track && !account) {
       return res.status(404).json({ message: "We found no orders for this number. If you have an Ikiguzi password, sign in instead." });
+    }
+    if (!codes) {
+      // No code proves the phone, so a number alone never opens an account
+      // with a password, and following orders also needs an order number.
+      if (account && !account.isGuest) {
+        return res.status(409).json({ message: "This number has an Ikiguzi account. Sign in with your password.", code: "SIGN_IN_REQUIRED" });
+      }
+      if (req.body?.track) {
+        const wanted = String(req.body.orderNumber || "").trim().toUpperCase();
+        const Order = require("../models/Order");
+        const match = wanted && (await Order.findOne({ user: account._id, orderNumber: wanted }).select("_id").lean());
+        if (!match) return res.status(404).json({ message: "We found no order with that number for this phone. Check the order number on your confirmation." });
+      }
     }
     // A name is needed only to create a new guest account; checking it first
     // keeps the code unused if it's missing.
@@ -1254,8 +1273,10 @@ exports.guestVerify = async (req, res) => {
       return res.status(400).json({ message: "Enter your full name." });
     }
 
-    const otpFailure = await consumeOtp(normalizedPhone, code, "login");
-    if (otpFailure) return res.status(otpFailure.status).json({ message: otpFailure.message });
+    if (codes) {
+      const otpFailure = await consumeOtp(normalizedPhone, code, "login");
+      if (otpFailure) return res.status(otpFailure.status).json({ message: otpFailure.message });
+    }
 
     let user = await guestAccountFor(normalizedPhone);
     if (user && user.role !== "buyer") {

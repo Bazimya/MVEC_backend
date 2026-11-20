@@ -28,14 +28,26 @@ const run = (fn, status = 200) => async (req, res) => {
 // The account can sign in at once; it takes deliveries once an admin approves it.
 exports.register = async (req, res) => {
   try {
-    let decoded;
-    try {
-      decoded = jwt.verify(String(req.body.verificationToken || ""), process.env.JWT_SECRET);
-    } catch {
-      return res.status(400).json({ message: "Your phone check expired. Verify your phone again." });
+    // Without SMS (config/phoneCodes.js) riders give their phone directly and
+    // must choose a password, since they can't sign in with a code.
+    const codes = require("../config/phoneCodes").required();
+    let phone;
+    if (codes || req.body.verificationToken) {
+      let decoded;
+      try {
+        decoded = jwt.verify(String(req.body.verificationToken || ""), process.env.JWT_SECRET);
+      } catch {
+        return res.status(400).json({ message: "Your phone check expired. Verify your phone again." });
+      }
+      phone = decoded.purpose === "registration" && decoded.role === "delivery" ? normalizePhone(decoded.phone) : null;
+      if (!phone) return res.status(400).json({ message: "Verify your phone as a rider first." });
+    } else {
+      phone = normalizePhone(req.body.phone);
+      if (!phone) return res.status(400).json({ message: "Enter a valid Rwandan phone number (e.g. 0788123456)." });
+      if (typeof req.body.password !== "string" || req.body.password.length < 8) {
+        return res.status(400).json({ message: "Choose a password of at least 8 characters. You'll sign in with it." });
+      }
     }
-    const phone = decoded.purpose === "registration" && decoded.role === "delivery" ? normalizePhone(decoded.phone) : null;
-    if (!phone) return res.status(400).json({ message: "Verify your phone as a rider first." });
     const fullName = String(req.body.fullName || "").trim();
     if (fullName.length < 3) return res.status(400).json({ message: "Enter your full name." });
     if (await User.findOne({ phone: { $in: phoneVariants(phone) } }).lean()) {

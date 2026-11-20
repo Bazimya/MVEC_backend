@@ -4,6 +4,8 @@ process.env.NODE_ENV = "test";
 // Tests never talk to real payment providers or send real messages.
 for (const key of ["PAYPACK_CLIENT_ID", "PAYPACK_CLIENT_SECRET", "FLW_SECRET_KEY", "PINDO_API_TOKEN", "AT_API_KEY"]) delete process.env[key];
 process.env.SMS_PROVIDER = "log";
+// Phone codes on, as with a real SMS provider (tests about turning them off set PHONE_CODES=off).
+process.env.PHONE_CODES = "on";
 // Maps use straight lines in tests: no calls to the public routing server.
 process.env.OSRM_URL = "";
 process.env.ALLOW_UNSIGNED_WEBHOOKS = "true";
