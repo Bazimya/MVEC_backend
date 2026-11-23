@@ -1,6 +1,6 @@
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { isLive, startupReport } = require("../src/config/env");
+const { isLive, startupReport, testPayments, simulatedPaymentsAllowed } = require("../src/config/env");
 
 const safe = {
   JWT_SECRET: "a".repeat(48),
@@ -69,5 +69,35 @@ describe("startup report", () => {
     const { errors, warnings } = startupReport({ ...safe, MOMO_BASE_URL: "", EMAIL_USER: "", ALLOW_UNSIGNED_WEBHOOKS: "true" });
     assert.deepEqual(errors, []);
     assert.equal(warnings.length, 3);
+  });
+});
+
+describe("TEST_PAYMENTS (simulated payments on a live server)", () => {
+  const original = { NODE_ENV: process.env.NODE_ENV, TEST_PAYMENTS: process.env.TEST_PAYMENTS };
+  afterEach(() => {
+    for (const [k, v] of Object.entries(original)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+
+  it("is off unless set to on, true or 1", () => {
+    for (const v of [undefined, "", "off", "false", "no"]) assert.equal(testPayments({ TEST_PAYMENTS: v }), false);
+    for (const v of ["on", "ON", "true", "1", " on "]) assert.equal(testPayments({ TEST_PAYMENTS: v }), true);
+  });
+
+  it("a live server simulates only with the flag; development always may", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.TEST_PAYMENTS;
+    assert.equal(simulatedPaymentsAllowed(), false);
+    process.env.TEST_PAYMENTS = "on";
+    assert.equal(simulatedPaymentsAllowed(), true);
+    process.env.NODE_ENV = "development";
+    delete process.env.TEST_PAYMENTS;
+    assert.equal(simulatedPaymentsAllowed(), true);
+  });
+
+  it("the startup report warns, never refuses, while test payments are on", () => {
+    const { errors, warnings } = startupReport({ ...safe, MOMO_BASE_URL: "", TEST_PAYMENTS: "on" });
+    assert.deepEqual(errors, []);
+    assert.ok(warnings.some((w) => w.includes("TEST_PAYMENTS is on")));
+    assert.ok(!warnings.some((w) => w.includes("No payment gateway")));
   });
 });

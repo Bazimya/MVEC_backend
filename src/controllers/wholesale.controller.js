@@ -1,7 +1,7 @@
 // Wholesale orders: vendors buy from suppliers. All rules live in
 // services/wholesale.service.js; this file resolves who is acting (owners or
 // their team members) and turns results into responses.
-const { isLive } = require("../config/env");
+const { simulatedPaymentsAllowed } = require("../config/env");
 const wholesaleService = require("../services/wholesale.service");
 const WholesaleOrder = require("../models/WholesaleOrder");
 const { supplierOwnerOf, vendorOwnerOf } = require("../utils/accountOwner.util");
@@ -154,7 +154,7 @@ exports.payWholesaleOrder = async (req, res) => {
       return res.status(200).json(result);
     }
     if (method !== "card") return res.status(400).json({ message: "Choose mobile money or card." });
-    if (flutterwave.isSandbox() && isLive()) {
+    if (flutterwave.isSandbox() && !simulatedPaymentsAllowed()) {
       return res.status(503).json({ message: "Card payments are temporarily unavailable. Please pay with mobile money." });
     }
     const payment = await Payment.create({

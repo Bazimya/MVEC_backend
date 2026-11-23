@@ -22,6 +22,7 @@ Tests need MySQL. `tests/helpers/mysql.js` creates and migrates the `_test` data
 - `isLive()` is the only switch. Only `NODE_ENV=development` or `test` is a development server. Anything else, including no `NODE_ENV`, is live. Never compare `NODE_ENV` to `"production"`.
 - On a live server, `startupReport()` refuses to start with unsafe settings: a weak `JWT_SECRET`, no database password, a localhost `FRONTEND_URL`, example webhook secrets or admin password, or no SMS gateway while `SHOW_RIDER_CODES=false`. A development server only warns.
 - A live server never simulates payments, never prints SMS codes, and never accepts unsigned webhooks.
+- Exception, until a gateway is connected: `TEST_PAYMENTS=on` (`testPayments()` / `simulatedPaymentsAllowed()` in `config/env.js`) lets a live server simulate any gateway that has no keys, so the deployed site can be tested end to end. A gateway with keys still takes real money. `GET /api/payments/mode` tells clients, and the website shows a test-mode banner (`components/TestModeBanner.jsx`). Remove it before taking real orders.
 - The one exception, until SMS works: riders (sign-up and sign-in only) see their code on screen when no text can be sent. It is on by default, live servers included (`showRiderCodes()` in `config/env.js`). `SHOW_RIDER_CODES=false` turns it off. Keep it on until the owner says otherwise.
 - Requiring `src/config/env.js` loads `.env`, so `server.js` requires it first.
 

@@ -1,4 +1,4 @@
-const { isLive } = require("../config/env");
+const { simulatedPaymentsAllowed } = require("../config/env");
 const orm = require("../database/orm");
 const User = require("../models/User");
 const Subscription = require("../models/Subscription");
@@ -366,7 +366,7 @@ exports.buyerPremiumCheckout = async (req, res) => {
     }
     if (method !== "card") return res.status(400).json({ message: "Choose mobile money or card." });
 
-    if (flutterwave.isSandbox() && isLive()) {
+    if (flutterwave.isSandbox() && !simulatedPaymentsAllowed()) {
       return res.status(503).json({ message: "Card payments are temporarily unavailable. Please pay with mobile money." });
     }
     const txRef = `PREM-${userId}-${Date.now()}`;

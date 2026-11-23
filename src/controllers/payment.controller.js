@@ -1,4 +1,4 @@
-const { isLive } = require("../config/env");
+const { isLive, simulatedPaymentsAllowed, testPayments } = require("../config/env");
 const orm = require("../database/orm");
 const Order = require("../models/Order");
 const Payment = require("../models/Payment");
@@ -19,7 +19,7 @@ async function initiateMobileMoneyPayment({ orderId, phoneNumber, gatewayService
 
   // Without gateway credentials the gateway runs in simulation mode. That is
   // fine for local development but must never mark real orders as paid.
-  if (gatewayService.isSandbox() && isLive()) {
+  if (gatewayService.isSandbox() && !simulatedPaymentsAllowed()) {
     throw Object.assign(new Error("Mobile money payments are temporarily unavailable. Please try again later."), { statusCode: 503 });
   }
 
@@ -122,10 +122,13 @@ async function initiateMobileMoneyPayment({ orderId, phoneNumber, gatewayService
 
   const fresh = await Payment.findById(payment._id);
   return {
-    message: `Payment prompt sent to ${phoneInfo.localNumber}. Please approve it on your phone.`,
+    message: gatewayService.isSandbox()
+      ? "Test payment confirmed. No money was taken."
+      : `Payment prompt sent to ${phoneInfo.localNumber}. Please approve it on your phone.`,
     paymentRef: transactionRef,
     paymentId: payment._id,
     amount: order.totalAmount,
+    testMode: gatewayService.isSandbox(),
     gatewayReference,
     status: fresh.status,
   };
@@ -141,7 +144,7 @@ async function initiateStandalonePayment({ amount, phoneNumber, userId, gatewayS
   if (!Number.isInteger(value) || value <= 0) {
     throw Object.assign(new Error("Enter an amount in whole Rwandan francs, for example 1000."), { statusCode: 400 });
   }
-  if (gatewayService.isSandbox() && isLive()) {
+  if (gatewayService.isSandbox() && !simulatedPaymentsAllowed()) {
     throw Object.assign(new Error("Mobile money payments are temporarily unavailable. Please try again later."), { statusCode: 503 });
   }
   const phoneInfo = formatRwandanPhone(phoneNumber);
@@ -188,10 +191,13 @@ async function initiateStandalonePayment({ amount, phoneNumber, userId, gatewayS
   if (payment.status === "SUCCESS") await paymentService.fulfilStandalonePayment(payment);
 
   return {
-    message: `Payment prompt sent to ${phoneInfo.localNumber}. Please approve it on your phone.`,
+    message: gatewayService.isSandbox()
+      ? "Test payment confirmed. No money was taken."
+      : `Payment prompt sent to ${phoneInfo.localNumber}. Please approve it on your phone.`,
     paymentRef: transactionRef,
     paymentId: payment._id,
     amount: value,
+    testMode: gatewayService.isSandbox(),
     gatewayReference: payment.gatewayReference || null,
     status: payment.status,
   };
@@ -244,7 +250,7 @@ exports.initiateCardPayment = async (req, res) => {
   try {
     const { orderId } = req.body;
     if (!orm.isValidObjectId(orderId)) return res.status(400).json({ message: "A valid order ID is required." });
-    if (flutterwaveService.isSandbox() && isLive()) {
+    if (flutterwaveService.isSandbox() && !simulatedPaymentsAllowed()) {
       return res.status(503).json({ message: "Card payments are temporarily unavailable. Please pay with mobile money." });
     }
 
@@ -300,7 +306,7 @@ exports.initiateKpayPayment = async (req, res) => {
     const method = String(req.body.method || "momo").toLowerCase();
     if (!["momo", "card", "spenn"].includes(method)) return res.status(400).json({ message: "Choose mobile money, card or SPENN." });
     if (!orm.isValidObjectId(orderId)) return res.status(400).json({ message: "A valid order ID is required." });
-    if (kpayService.isSandbox() && isLive()) {
+    if (kpayService.isSandbox() && !simulatedPaymentsAllowed()) {
       return res.status(503).json({ message: "K-Pay is temporarily unavailable. Please choose another way to pay." });
     }
 
@@ -484,3 +490,16 @@ exports.confirmPayment = async (req, res) => {
 // Shared with other controllers that take payments (e.g. buyer Premium).
 exports.initiateStandalonePayment = initiateStandalonePayment;
 exports.paypackGateway = paypackGateway;
+
+// Which payment methods are simulated right now, so the website and app can say
+// "test mode, no real money" instead of letting anyone think a payment is real.
+exports.getPaymentMode = (req, res) => {
+  const allowed = simulatedPaymentsAllowed();
+  const simulated = {
+    mobileMoney: allowed && paypackService.isSandbox(),
+    card: allowed && flutterwaveService.isSandbox(),
+    kpay: allowed && kpayService.isSandbox(),
+  };
+  res.set("Cache-Control", "public, max-age=60");
+  return res.status(200).json({ testMode: Object.values(simulated).some(Boolean), testPaymentsFlag: testPayments(), simulated });
+};

@@ -10,7 +10,11 @@ const {
   initiateKpayPayment,
   checkPaymentStatus,
   confirmPayment,
+  getPaymentMode,
 } = require("../controllers/payment.controller");
+
+// Public: is this server simulating payments (test mode)?
+router.get("/mode", getPaymentMode);
 
 // Initiate a Paypack payment (MTN or Airtel number, provider auto-detected)
 router.post("/pay", protect, limits.payment, initiatePaypackPayment);

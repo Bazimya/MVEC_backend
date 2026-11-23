@@ -61,7 +61,9 @@ function startupReport(env = process.env) {
     env.FLW_SECRET_KEY,
     env.KPAY_API_KEY,
   ];
-  if (!gateways.some(Boolean)) {
+  if (testPayments(env)) {
+    warnings.push("TEST_PAYMENTS is on: every payment method without real keys is simulated and confirmed at once, so no money moves. The website shows a test-mode notice. Remove TEST_PAYMENTS before taking real orders");
+  } else if (!gateways.some(Boolean)) {
     warnings.push("No payment gateway is configured: online payments are refused until one is connected");
   }
   if (!(env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY)) {
@@ -83,4 +85,16 @@ function showRiderCodes(env = process.env) {
   return String(env.SHOW_RIDER_CODES ?? "").trim().toLowerCase() !== "false";
 }
 
-module.exports = { isLive, isTest, weakJwtSecret, startupReport, showRiderCodes };
+/**
+ * Temporary, until a payment gateway is connected: TEST_PAYMENTS=on lets a live
+ * server use the same simulator a development server uses, for any gateway that
+ * has no keys. A gateway with real keys still takes real money.
+ */
+function testPayments(env = process.env) {
+  return ["on", "true", "1"].includes(String(env.TEST_PAYMENTS ?? "").trim().toLowerCase());
+}
+
+/** May a gateway without keys simulate payments here? Development always; live only with TEST_PAYMENTS. */
+const simulatedPaymentsAllowed = () => !isLive() || testPayments();
+
+module.exports = { isLive, isTest, weakJwtSecret, startupReport, showRiderCodes, testPayments, simulatedPaymentsAllowed };
