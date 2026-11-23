@@ -35,7 +35,7 @@ const findCustomerAccount = async ({ phone, email }) => {
 // @desc    Seller records an order taken outside the online checkout.
 // @route   POST /api/orders/vendor/manual
 // @body    { customer:{name,phone,email}, items:[{productId, qty, price?}],
-//            shippingAddress:{province,district,sector,street}, shippingMethod: STANDARD|EXPRESS|PICKUP,
+//            shippingAddress:{province,district,sector,street}, shippingMethod: STANDARD|PICKUP,
 //            deliveryFee? (override), payment: LINK|COD|PAID_OFFLINE, offlineMethod?: CASH|MOMO|BANK, note? }
 // @access  Private (vendor)
 exports.createManualOrder = async (req, res) => {
@@ -55,7 +55,7 @@ exports.createManualOrder = async (req, res) => {
     }
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ message: "Add at least one product." });
 
-    const method = ["STANDARD", "EXPRESS", "PICKUP"].includes(shippingMethod) ? shippingMethod : "STANDARD";
+    const method = shippingMethod === "PICKUP" ? "PICKUP" : "STANDARD"; // express is no longer offered
     const isPickup = method === "PICKUP";
     if (!isPickup && (!shippingAddress.district || !shippingAddress.street)) {
       return res.status(400).json({ message: "Enter the delivery district and street, or choose pickup." });

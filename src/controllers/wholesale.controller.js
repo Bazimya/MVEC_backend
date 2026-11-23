@@ -59,9 +59,13 @@ exports.holdEscrow = async (req, res) => {
 
 exports.confirmReceipt = async (req, res) => {
   try {
-    const result = await wholesaleService.confirmReceiptAndRelease(req.params.orderId, vendorOwnerOf(req));
+    // addToStock: false = "not now"; the goods can be added later with one tap.
+    const addToStock = (req.body || {}).addToStock !== false;
+    const result = await wholesaleService.confirmReceiptAndRelease(req.params.orderId, vendorOwnerOf(req), { addToStock });
     const units = (result.stocked || []).reduce((n, s) => n + s.quantity, 0);
-    const message = units ? `Receipt confirmed. The supplier has been paid and ${units} unit${units === 1 ? " was" : "s were"} added to your inventory.` : "Receipt confirmed. The supplier has been paid.";
+    const message = units
+      ? `Receipt confirmed. The supplier has been paid and ${units} unit${units === 1 ? " was" : "s were"} added to your inventory.`
+      : addToStock ? "Receipt confirmed. The supplier has been paid." : "Receipt confirmed. The supplier has been paid. Use \"Add to my stock\" when you want these goods in your store.";
     return res.status(200).json({ success: true, message, data: result });
   } catch (error) {
     return fail(res, error);
@@ -107,6 +111,19 @@ exports.adminList = async (req, res) => {
       .populate("vendor", "Fullname companyName email phone").populate("supplier", "Fullname companyName email phone")
       .sort({ updatedAt: -1 }).limit(Math.min(Number(req.query.limit) || 50, 200));
     return res.json({ orders });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+// The vendor's "Add to my stock" on a completed purchase.
+exports.addToStock = async (req, res) => {
+  try {
+    const result = await wholesaleService.restockCompletedOrder(req.params.orderId, vendorOwnerOf(req));
+    const units = (result.stocked || []).reduce((n, s) => n + s.quantity, 0);
+    const drafts = (result.stocked || []).filter((s) => s.draft).length;
+    const message = `${units} unit${units === 1 ? " was" : "s were"} added to your inventory.${drafts ? ` ${drafts} new product${drafts === 1 ? " waits" : "s wait"} as a draft: set a selling price to publish ${drafts === 1 ? "it" : "them"}.` : ""}`;
+    return res.json({ success: true, message, data: result });
   } catch (error) {
     return fail(res, error);
   }

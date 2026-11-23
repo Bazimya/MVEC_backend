@@ -80,7 +80,7 @@ describe("affiliate flow", () => {
   const createLink = (user, productId) =>
     request(app).post("/api/affiliates/links").set("Authorization", `Bearer ${token(user)}`).send({ productId });
   const click = (code, query = "") => request(app).get(`/api/affiliates/track/${code}${query}`);
-  const checkout = (items, visitorId) =>
+  const checkout = (items, visitorId, { pickup = true } = {}) =>
     request(app)
       .post("/api/orders/direct-checkout")
       .set("Authorization", `Bearer ${token(buyer)}`)
@@ -88,8 +88,8 @@ describe("affiliate flow", () => {
         items,
         visitorId,
         paymentMethod: "MOMO",
-        // Kigali standard delivery is free, so order totals equal item totals.
-        shippingAddress: { street: "KN 1 Rd", district: "Nyarugenge", province: "Kigali City" },
+        // Pickup has no delivery fee, so order totals equal item totals.
+        ...(pickup ? { deliveryMethod: "pickup" } : { shippingAddress: { street: "KN 1 Rd", district: "Nyarugenge", province: "Kigali City" } }),
         recipient: { name: "Test Buyer", phone: "0788123456" },
       });
   const pay = (order, ref = `ext-${order._id}`) =>
@@ -101,12 +101,13 @@ describe("affiliate flow", () => {
       payload: {},
     });
 
-  async function promotedOrder() {
+  async function promotedOrder(opts) {
     const { body } = await createLink(affA, mouse._id);
     const c = await click(body.link.affiliateCode);
     const res = await checkout(
       [{ productId: mouse._id, qty: 1 }, { productId: keyboard._id, qty: 1 }],
-      c.body.data.visitorId
+      c.body.data.visitorId,
+      opts
     );
     assert.equal(res.status, 201, JSON.stringify(res.body));
     return { order: await Order.findById(res.body.order._id), link: body.link };
@@ -237,7 +238,7 @@ describe("affiliate flow", () => {
   const wallet = () => AffiliateWallet.findOne({ affiliateUser: affA._id });
 
   test("commission stays pending through paid, processing and shipped; delivery approves it once", async () => {
-    const { order } = await promotedOrder();
+    const { order } = await promotedOrder({ pickup: false });
     assert.equal(await ConversionAudit.countDocuments(), 0, "no commission before payment");
     await pay(order);
     assert.equal((await audit()).status, "PENDING");

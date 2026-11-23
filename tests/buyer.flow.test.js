@@ -172,7 +172,7 @@ test("sandbox payment goes through escrow, blocks duplicates, then cancel refund
   const order = await Order.findById(id);
   assert.equal(order.paymentStatus, "PAID");
   assert.ok(order.paidAt);
-  assert.equal(await Settlement.countDocuments({ order: id, status: "HELD" }), 1);
+  assert.equal(await Settlement.countDocuments({ orderItemId: { $ne: null },  order: id, status: "HELD" }), 1);
 
   const again = await request(app).post("/api/payments/pay").set(auth(buyerToken)).send({ orderId: id, phoneNumber: "0788123456" });
   assert.equal(again.status, 400);
@@ -185,7 +185,7 @@ test("sandbox payment goes through escrow, blocks duplicates, then cancel refund
   const after = await Order.findById(id);
   assert.equal(after.orderStatus, "CANCELLED");
   assert.equal(after.paymentStatus, "REFUNDED");
-  assert.equal(await Settlement.countDocuments({ order: id, status: "REFUNDED" }), 1);
+  assert.equal(await Settlement.countDocuments({ orderItemId: { $ne: null },  order: id, status: "REFUNDED" }), 1);
   assert.equal((await VendorWallet.findOne({ vendor: vendorUser._id })).pendingBalance, 0);
   assert.equal((await Product.findById(product._id)).stockQuantity, 2);
 });

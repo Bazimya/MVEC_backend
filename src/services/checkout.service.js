@@ -11,7 +11,8 @@ const shippingService = require("./shipping.service");
 const promotionService = require("./promotion.service");
 
 // Buyers pick a delivery speed; sellers price it with their shipping zones.
-const DELIVERY_METHODS = { standard: "STANDARD", express: "EXPRESS", pickup: "PICKUP" };
+// Pick it up, or deliver it (standard). "express" from an older app is delivered as standard.
+const DELIVERY_METHODS = { standard: "STANDARD", express: "STANDARD", pickup: "PICKUP" };
 
 const MAX_QTY_PER_LINE = 100;
 const PAYMENT_METHODS = ["MOMO", "AIRTEL"];
@@ -40,7 +41,7 @@ function parseRecipient(recipient = {}, role = "receiving the order") {
  */
 function parseDelivery({ shippingAddress = {}, recipient = {}, deliveryMethod, shippingMethod }) {
   const requested = String(shippingMethod || deliveryMethod || "standard").toLowerCase();
-  const method = DELIVERY_METHODS[requested] ? requested : "standard";
+  const method = requested === "pickup" ? "pickup" : "standard";
   const contact = parseRecipient(recipient, "collecting the order");
 
   // Pickup: the buyer collects from the store, so no delivery address.

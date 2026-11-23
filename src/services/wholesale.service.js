@@ -295,7 +295,7 @@ class WholesaleService {
   }
 
   /** Pay the supplier: release the held settlement (minus commission), then stock the vendor's store. */
-  async releaseToSupplier(order, how = "Vendor confirmed receipt") {
+  async releaseToSupplier(order, how = "Vendor confirmed receipt", { addToStock = true } = {}) {
     const financial = require("./financial.service");
     let net = Number(order.totalAmount);
     await inTransaction(async (session) => {
@@ -324,6 +324,8 @@ class WholesaleService {
     // The money is settled either way; a stocking failure is for Ikiguzi to fix
     // (POST /wholesale/admin/orders/:id/restock), not a reason to undo it.
     let stocked = null;
+    // The vendor chose "not now": the order keeps an "Add to my stock" button.
+    if (!addToStock) return { order, net, stocked };
     try {
       stocked = await stock.stockVendorStore(order);
       if (!stocked.skipped) order.stockedAt = new Date();
@@ -339,19 +341,24 @@ class WholesaleService {
   }
 
   /** The vendor confirms the goods arrived. */
-  async confirmReceiptAndRelease(orderId, vendorUserId) {
+  async confirmReceiptAndRelease(orderId, vendorUserId, { addToStock = true } = {}) {
     const order = await WholesaleOrder.findOne({ _id: orderId, ...(vendorUserId ? { vendor: vendorUserId } : {}) });
     if (!order) throw httpError(404, "Wholesale order not found.");
     if (!["ESCROW_HELD", "SHIPPED", "DELIVERED"].includes(order.status)) {
       throw httpError(409, `Cannot confirm an order that is ${order.status.toLowerCase().replaceAll("_", " ")}.`);
     }
-    const { net, stocked } = await this.releaseToSupplier(order);
+    const { net, stocked } = await this.releaseToSupplier(order, "Vendor confirmed receipt", { addToStock });
     return { order, supplierReceived: net, stocked: stocked?.stocked || [] };
   }
 
-  /** Admin: add a completed order's goods to the vendor's store if that failed. */
-  async restockCompletedOrder(orderId) {
-    const order = await WholesaleOrder.findById(orderId);
+  /**
+   * Add a completed order's goods to the vendor's store: the vendor's
+   * "Add to my stock" (vendorUserId set) or the admin's retry after a failure.
+   * Products bought before are restocked; new ones are created from the
+   * supplier's listing, so the vendor never starts from scratch.
+   */
+  async restockCompletedOrder(orderId, vendorUserId = null) {
+    const order = await WholesaleOrder.findOne({ _id: orderId, ...(vendorUserId ? { vendor: vendorUserId } : {}) });
     if (!order) throw httpError(404, "Wholesale order not found.");
     if (order.status !== "CONFIRMED_RELEASED") throw httpError(409, "Only completed orders are added to the vendor's store.");
     if (order.stockedAt) throw httpError(409, "These goods are already in the vendor's store.");

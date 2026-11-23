@@ -15,11 +15,12 @@ const { provinceOfDistrict } = require("../config/rwandaLocations");
 
 // Used only when neither the seller nor Ikiguzi has configured any zone.
 const DEFAULT_ZONES = [
-  { _id: null, name: "Kigali City (Ikiguzi standard)", provinces: ["Kigali City"], districts: [], fee: 0, expressFee: 10000, freeOverAmount: 0, eta: "Same day – 1 day", methods: ["STANDARD", "EXPRESS"] },
-  { _id: null, name: "Rest of Rwanda (Ikiguzi standard)", provinces: [], districts: [], fee: 5000, expressFee: 10000, freeOverAmount: 0, eta: "1–3 days", methods: ["STANDARD", "EXPRESS"] },
+  // Delivery is never free: standard delivery always has a price.
+  { _id: null, name: "Kigali City (Ikiguzi standard)", provinces: ["Kigali City"], districts: [], fee: 2000, freeOverAmount: 0, eta: "Same day – 1 day", methods: ["STANDARD"] },
+  { _id: null, name: "Rest of Rwanda (Ikiguzi standard)", provinces: [], districts: [], fee: 5000, freeOverAmount: 0, eta: "1–3 days", methods: ["STANDARD"] },
 ];
 
-const METHODS = ["STANDARD", "EXPRESS", "PICKUP"];
+// Stored zone methods may still list EXPRESS (older zones); checkout no longer offers it.
 const lc = (v) => String(v || "").trim().toLowerCase();
 
 const normalizeAddress = (address = {}) => {
@@ -51,15 +52,12 @@ const bestZone = (zones, address) => {
 };
 
 // Fee for a method in a zone; express falls back to standard when not offered.
-const feeFor = (zone, requested, subtotal) => {
-  const methods = zone.methods?.length ? zone.methods : ["STANDARD"];
-  let method = METHODS.includes(requested) ? requested : "STANDARD";
-  if (!methods.includes(method)) method = methods.includes("STANDARD") ? "STANDARD" : methods[0];
-  let fee;
-  if (method === "EXPRESS") fee = zone.expressFee ?? zone.fee;
-  else if (method === "PICKUP") fee = zone.pickupFee || 0;
-  else fee = zone.freeOverAmount > 0 && subtotal >= zone.freeOverAmount ? 0 : zone.fee;
-  return { method, fee: Math.max(0, Math.round(Number(fee) || 0)), fellBack: method !== requested };
+// Two ways only: the buyer collects (PICKUP, handled before zones) or it is
+// delivered (STANDARD). Express is gone and delivery is never free: an old
+// client asking for EXPRESS gets STANDARD, and a zone's free-over amount is ignored.
+const feeFor = (zone, requested) => {
+  const fee = zone.fee ?? zone.expressFee ?? 0;
+  return { method: "STANDARD", fee: Math.max(0, Math.round(Number(fee) || 0)), fellBack: false };
 };
 
 const zonesForStore = async (vendorId, storeId, cache) => {
@@ -103,7 +101,7 @@ exports.pickupLocations = async (storeIds) => {
  */
 exports.quoteShipping = async ({ lines, address, method = "STANDARD" }) => {
   const where = normalizeAddress(address);
-  const requested = String(method || "STANDARD").toUpperCase();
+  const requested = String(method || "STANDARD").toUpperCase() === "PICKUP" ? "PICKUP" : "STANDARD";
   const primaryCache = new Map();
   const zoneCache = new Map();
   const groupsByKey = new Map();
@@ -172,10 +170,10 @@ exports.quoteShipping = async ({ lines, address, method = "STANDARD" }) => {
       });
       continue;
     }
-    const { method: used, fee, fellBack } = feeFor(zone, requested, group.subtotal);
+    const { method: used, fee, fellBack } = feeFor(zone, requested);
     groups.push({
       ...group, storeName, deliverable: true, fee, method: used, eta: zone.eta, zone: zone._id || null, zoneName: zone.name, source,
-      freeOverAmount: used === "STANDARD" && zone.freeOverAmount > 0 ? zone.freeOverAmount : null,
+      freeOverAmount: null,
       message: fellBack ? `${storeName} doesn't offer ${requested.toLowerCase()} delivery; ${used.toLowerCase()} is used.` : null,
     });
   }
@@ -197,7 +195,7 @@ exports.previewForStore = async ({ vendorId, storeId, address, subtotal = 0, met
   const { zones, source } = await zonesForStore(vendorId, storeId, new Map());
   const zone = bestZone(zones, where);
   if (!zone) return { address: where, source, deliverable: false };
-  const { method: used, fee } = feeFor(zone, String(method).toUpperCase(), Number(subtotal) || 0);
+  const { method: used, fee } = feeFor(zone, String(method).toUpperCase());
   return { address: where, source, deliverable: true, zone: zone._id, zoneName: zone.name, method: used, fee, eta: zone.eta };
 };
 

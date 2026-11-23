@@ -142,6 +142,27 @@ describe("Wholesale stock: purchases land in the vendor's store; suppliers manag
     expect(bad.status).toBe(400);
   });
 
+  test("\"not now\" at receipt pays the supplier but leaves stock alone; \"Add to my stock\" adds it once", async () => {
+    const o = await buy(3);
+    const done = await request(app).post(`/api/wholesale/orders/${o._id}/confirm-receipt`).set(as("vendor")).send({ addToStock: false });
+    expect(done.status).toBe(200);
+    expect(done.body.message).toMatch(/Add to my stock/);
+    expect(await Product.countDocuments({ vendor: vendor._id })).toBe(0);
+    expect((await WholesaleOrder.findById(o._id)).stockedAt).toBeFalsy();
+
+    const added = await request(app).post(`/api/wholesale/orders/${o._id}/add-to-stock`).set(as("vendor"));
+    expect(added.status).toBe(200);
+    expect(added.body.message).toMatch(/3 units were added/);
+    const [p] = await Product.find({ vendor: vendor._id });
+    expect(p.stockQuantity).toBe(3);
+    expect(p.price).toBe(36000);
+
+    const again = await request(app).post(`/api/wholesale/orders/${o._id}/add-to-stock`).set(as("vendor"));
+    expect(again.status).toBe(409);
+    // Only the buying vendor can stock it.
+    expect((await request(app).post(`/api/wholesale/orders/${o._id}/add-to-stock`).set(as("supplierUser"))).status).not.toBe(200);
+  });
+
   test("automatic release after 7 days also stocks the store", async () => {
     await buy(2);
     const later = new Date(Date.now() + 8 * 24 * 3600 * 1000);

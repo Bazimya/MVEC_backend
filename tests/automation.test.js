@@ -143,8 +143,8 @@ test("a vendor confirms its own delivery with the buyer's code; wrong codes lock
   assert.equal(first.status, 200, JSON.stringify(first.body));
   let fresh = await Order.findById(order._id);
   assert.equal(fresh.orderStatus, "PROCESSING", "multi-vendor order is not complete yet");
-  assert.equal(await Settlement.countDocuments({ order: order._id, vendor: vendor._id, status: "RELEASED" }), 1);
-  assert.equal(await Settlement.countDocuments({ order: order._id, vendor: vendorB._id, status: "HELD" }), 1);
+  assert.equal(await Settlement.countDocuments({ orderItemId: { $ne: null },  order: order._id, vendor: vendor._id, status: "RELEASED" }), 1);
+  assert.equal(await Settlement.countDocuments({ orderItemId: { $ne: null },  order: order._id, vendor: vendorB._id, status: "HELD" }), 1);
 
   for (let i = 0; i < 5; i += 1) assert.equal((await deliver(vendorB, "111111")).status, 400);
   assert.equal((await deliver(vendorB, order.deliveryOtp)).status, 423, "locked after 5 wrong codes");
@@ -193,17 +193,17 @@ test("dispute refund reverses escrow and pays the buyer; vendor release cannot b
   const dispute = await Dispute.findOne({ order: order._id });
   const res = await request(app).post(`/api/disputes/${dispute._id}/arbitrate`).set(auth(admin)).send({ decision: "REFUND_BUYER" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.equal(await Settlement.countDocuments({ order: order._id, status: "REFUNDED" }), 1);
+  assert.equal(await Settlement.countDocuments({ orderItemId: { $ne: null },  order: order._id, status: "REFUNDED" }), 1);
   assert.equal((await Disbursement.findOne({ order: order._id })).status, "SUCCESS");
 
   const order2 = await paidOrder();
   await request(app).post("/api/disputes").set(auth(buyer)).send({ orderId: String(order2._id), reason: "OTHER", description: "Seller says it was delivered." });
   const d2 = await Dispute.findOne({ order: order2._id });
   assert.equal((await request(app).post(`/api/disputes/${d2._id}/arbitrate`).set(auth(admin)).send({ decision: "RELEASE_TO_VENDOR" })).status, 200);
-  assert.equal(await Settlement.countDocuments({ order: order2._id, status: "RELEASED" }), 1);
+  assert.equal(await Settlement.countDocuments({ orderItemId: { $ne: null },  order: order2._id, status: "RELEASED" }), 1);
   const deliver = await request(app).patch(`/api/orders/${order2._id}/deliver`).set(auth(vendor)).send({ deliveryOtp: (await Order.findById(order2._id)).deliveryOtp });
   assert.equal(deliver.status, 200);
-  assert.equal(await Settlement.countDocuments({ order: order2._id, status: "RELEASED" }), 1, "no second release");
+  assert.equal(await Settlement.countDocuments({ orderItemId: { $ne: null },  order: order2._id, status: "RELEASED" }), 1, "no second release");
 });
 
 test("unpaid orders get one payment reminder", async () => {

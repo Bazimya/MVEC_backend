@@ -16,6 +16,7 @@ router.get("/orders/mine", protect, authorize("vendor", "supplier", "super_admin
 router.post("/orders", ...vendorSide, requireOnboarded, c.createWholesaleOrder);
 router.post("/orders/:orderId/pay", ...vendorSide, c.payWholesaleOrder);
 router.post("/orders/:orderId/confirm-receipt", ...vendorSide, c.confirmReceipt);
+router.post("/orders/:orderId/add-to-stock", ...vendorSide, c.addToStock);
 router.post("/orders/:orderId/report-problem", ...vendorSide, c.reportProblem);
 router.post("/orders/:orderId/cancel", protect, authorize("vendor", "supplier", "super_admin"), (req, res, next) => (req.user.role === "supplier" ? checkSupplierPermission("supply")(req, res, next) : checkStaffPermission("canManageOrders")(req, res, next)), c.cancelOrder);
 
