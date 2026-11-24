@@ -2,21 +2,25 @@
 // time for one product. The price follows the seconds bought
 // (utils/adPricing.js: 5,000 RWF = 3 seconds, +1,000 RWF per extra second) and
 // is always worked out here, never taken from the client. The seller writes the
-// banner's title and description and pays by mobile money. Ikiguzi then
-// approves the booking (it runs for adDays, default 7, and each turn of the
-// banner shows it for the seconds it paid for) or rejects it and refunds the
-// number that paid.
+// banner's title and description and pays by mobile money. As soon as the
+// payment is verified the ad goes LIVE (it runs for adDays, default 7, and each
+// turn of the banner shows it for the seconds it paid for). Ikiguzi can pause
+// it, remove it, or reject it and refund the number that paid.
 //
-//   AWAITING_PAYMENT → PAID (waiting for Ikiguzi) → LIVE → ENDED
-//                    → CANCELLED                  → PAUSED ⇄ LIVE, → REMOVED
-//                                                 → REJECTED (refunded)
+//   AWAITING_PAYMENT → PAID → LIVE → ENDED
+//                    → CANCELLED    → PAUSED ⇄ LIVE, → REMOVED
+//                                   → REJECTED (refunded)
 //
 // An ad is only ever PAID after the payment layer verified the money with the
 // gateway (payment.service: webhook or provider status check) and only ever
 // shows while LIVE, inside its dates, with a successful payment behind it.
+// Older flat-fee bookings (no displaySeconds) still wait in PAID for an admin
+// to approve them.
 //
-// Money: paid → held by Ikiguzi (ESCROW_HOLDING); approved → Ikiguzi revenue
-// (AD_PLACEMENT_FEE); rejected → refunded to the payer.
+// Money: paid → held by Ikiguzi (ESCROW_HOLDING). A new-style ad stays in
+// escrow while it runs, so it can still be refunded, and becomes Ikiguzi revenue
+// (AD_PLACEMENT_FEE) when it ends or is removed. An older booking became revenue
+// when approved. Rejected → refunded to the payer.
 const AdBooking = require("../models/AdBooking");
 const Product = require("../models/Product");
 const Payment = require("../models/Payment");
@@ -32,13 +36,14 @@ const httpError = (statusCode, message) => Object.assign(new Error(message), { s
 const idOf = (v) => String(v?._id || v?.id || v || "");
 const money = (n) => `${new Intl.NumberFormat("en-RW").format(Math.round(Number(n) || 0))} RWF`;
 const DAY = 24 * 3600 * 1000;
+const DEFAULT_SLIDE_SECONDS = 5; // what the banner gives an ad with no bought time (matches the website)
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 const TITLE = { min: 3, max: 60 };
 const DESCRIPTION = { min: 5, max: 1000 };
 const SELLERS = ["vendor", "supplier", "super_admin"];
 const LABELS = {
   AWAITING_PAYMENT: "Waiting for your payment",
-  PAID: "Paid: Ikiguzi is reviewing it",
+  PAID: "Paid: going live",
   LIVE: "Live on the home page",
   REJECTED: "Rejected: refunded",
   ENDED: "Ended",
@@ -80,9 +85,25 @@ async function quote({ seconds, amount } = {}) {
   return { seconds: s, amount: a, days: p.days };
 }
 
-/** Bookings whose time is up become ENDED (checked when anyone reads them). */
+// New-style ads (bought by the second) earn Ikiguzi their fee when they finish;
+// older flat-fee bookings already did when they were approved.
+const earnsAtEnd = (b) => Boolean(b.displaySeconds);
+
+async function postRevenue(booking) {
+  await ledger.mvecEarned({
+    from: ["ESCROW_HOLDING"], amount: booking.amount, entryType: "AD_PLACEMENT_FEE",
+    reference: booking.bookingNumber, description: `Home page ad ${booking.bookingNumber}`,
+  }).catch((e) => console.error("Ad booking revenue:", e.message));
+}
+const recogniseRevenue = (booking) => (earnsAtEnd(booking) ? postRevenue(booking) : null);
+
+/** Bookings whose time is up become ENDED, and the fee becomes Ikiguzi's (checked when anyone reads them). */
 async function endExpired(now = new Date()) {
-  await AdBooking.updateMany({ status: "LIVE", endsAt: { $lte: now } }, { $set: { status: "ENDED" } });
+  const due = await AdBooking.find({ status: { $in: ["LIVE", "PAUSED"] }, endsAt: { $lte: now } }).lean();
+  for (const b of due) {
+    const claimed = await AdBooking.updateOne({ _id: b._id, status: { $in: ["LIVE", "PAUSED"] } }, { $set: { status: "ENDED" } });
+    if (claimed.modifiedCount) await recogniseRevenue(b);
+  }
 }
 
 const view = (b) => {
@@ -195,9 +216,12 @@ async function markPaid(payment) {
     from: ["BUYER_PAYMENTS"], to: ["ESCROW_HOLDING"], amount: booking.amount, entryType: "PAYMENT_RECEIVED",
     reference: booking.bookingNumber, description: `Ad booking ${booking.bookingNumber} paid (held until Ikiguzi reviews it)`,
   }).catch((e) => console.error("Ad booking ledger:", e.message));
-  notifications.adminAlert({ title: "Ad booking to approve", message: `${booking.bookingNumber}: ${booking.title || booking.products?.[0]?.name || "ad"}, ${money(booking.amount)} paid.`, link: "/admin/advertising" }).catch(() => {});
-  notifications.notify(booking.seller, { type: "PAYMENT", title: "Ad payment received", message: `${money(booking.amount)} received. Ikiguzi will review your ad shortly.`, link: "/advertise" }).catch(() => {});
-  return booking;
+  notifications.notify(booking.seller, { type: "PAYMENT", title: "Ad payment received", message: `${money(booking.amount)} received.${booking.displaySeconds ? " Your ad is going live now." : " Ikiguzi will review your ad shortly."}`, link: "/advertise" }).catch(() => {});
+  if (!booking.displaySeconds) {
+    notifications.adminAlert({ title: "Ad booking to approve", message: `${booking.bookingNumber}: ${money(booking.amount)} paid.`, link: "/admin/advertising" }).catch(() => {});
+    return booking;
+  }
+  return (await goLive(bookingId)) || (await AdBooking.findById(bookingId));
 }
 
 /** The gateway reported the payment failed: the booking is cancelled and nothing goes live. */
@@ -220,10 +244,49 @@ async function cancel(user, id) {
   return { message: "Booking cancelled. If you already approved the payment on your phone, tell Ikiguzi support.", booking: view(await AdBooking.findById(booking._id)) };
 }
 
+/**
+ * How the banner is using each live ad right now: its place in the rotation, how
+ * many ads share the banner, the length of one full round, and the share of the
+ * banner's time it gets. Same ordering and seconds the banner itself uses.
+ */
+async function usageFor(bookings) {
+  if (!bookings.some((b) => b.status === "LIVE")) return new Map();
+  const live = await liveHeroProducts(12);
+  const seconds = (s) => s.displaySeconds || DEFAULT_SLIDE_SECONDS;
+  const cycle = live.reduce((sum, s) => sum + seconds(s), 0);
+  const out = new Map();
+  for (const b of bookings.filter((x) => x.status === "LIVE")) {
+    const index = live.findIndex((s) => s.id === b.bookingNumber);
+    out.set(idOf(b), index === -1
+      ? { showing: false } // live, but its product is off sale or out of stock
+      : { showing: true, position: index + 1, liveAds: live.length, secondsPerTurn: seconds(live[index]), cycleSeconds: cycle, sharePercent: cycle ? Math.round((seconds(live[index]) / cycle) * 100) : 100 });
+  }
+  return out;
+}
+
 async function mine(user) {
   await endExpired();
+  await activatePaid();
   const rows = await AdBooking.find({ seller: idOf(user) }).sort({ createdAt: -1 }).limit(50).lean();
-  return { bookings: rows.map(view), ...(await pricing()) };
+  const usage = await usageFor(rows);
+  const now = Date.now();
+  return {
+    bookings: rows.map((r) => ({
+      ...view(r),
+      daysLeft: r.status === "LIVE" && r.endsAt ? Math.max(0, Math.ceil((new Date(r.endsAt).getTime() - now) / DAY)) : null,
+      usage: usage.get(idOf(r)) || null,
+    })),
+    ...(await pricing()),
+  };
+}
+
+/** The banner reports what happened to an ad: shown, or one of its buttons pressed. Counts only ads that are live. */
+async function track(bookingNumber, event) {
+  const field = { view: "views", click: "clicks" }[event];
+  if (!field || !/^ADB-[A-Z0-9-]{3,40}$/.test(String(bookingNumber || ""))) throw httpError(400, "Unknown ad event.");
+  const row = await AdBooking.findOne({ bookingNumber: String(bookingNumber), status: "LIVE" }).select("_id").lean();
+  if (row) await AdBooking.updateOne({ _id: row._id, status: "LIVE" }, { $inc: { [field]: 1 } });
+  return { ok: true };
 }
 
 async function forAdmin({ status } = {}) {
@@ -244,28 +307,44 @@ async function load(id) {
 
 const notPossible = (booking) => httpError(409, `This booking is ${LABELS[booking.status].toLowerCase()}.`);
 
-/** Ikiguzi approves: live from now for the booked days; the fee is Ikiguzi's. Only a paid booking can be approved, once. */
-async function approve(admin, id) {
-  const booking = await load(id);
+/**
+ * PAID → LIVE: runs from now for the booked days. Only a verified, paid booking
+ * can go live, and only once (a conditional update, so two callers can't both do it).
+ * `reviewer` is the admin who approved it, or null when it went live by itself.
+ */
+async function goLive(id, reviewer = null) {
+  const booking = await AdBooking.findById(id);
+  if (!booking) return null;
   const now = new Date();
   // The column keeps whole seconds and rounds to the nearest, so round down here:
-  // the ad must never look as if it starts a moment after it was approved.
+  // the ad must never look as if it starts a moment after it was paid.
   const startsAt = new Date(Math.floor(now.getTime() / 1000) * 1000);
   const claimed = await AdBooking.updateOne(
     { _id: booking._id, status: "PAID", paymentStatus: "SUCCESS" },
-    { $set: { status: "LIVE", startsAt, endsAt: new Date(startsAt.getTime() + booking.days * DAY), reviewedBy: idOf(admin), reviewedAt: now } },
+    { $set: { status: "LIVE", startsAt, endsAt: new Date(startsAt.getTime() + booking.days * DAY), reviewedBy: reviewer, reviewedAt: reviewer ? now : null } },
   );
-  if (!claimed.modifiedCount) throw notPossible(booking);
+  if (!claimed.modifiedCount) return null;
   const live = await AdBooking.findById(booking._id);
-  await ledger.mvecEarned({
-    from: ["ESCROW_HOLDING"], amount: live.amount, entryType: "AD_PLACEMENT_FEE",
-    reference: live.bookingNumber, description: `Home page ad ${live.bookingNumber}`,
-  }).catch((e) => console.error("Ad booking revenue:", e.message));
+  if (!earnsAtEnd(live)) await postRevenue(live); // an older booking is earned when approved
   notifications.notify(live.seller, {
     type: "SYSTEM", title: "Your ad is live",
     message: `${live.title || live.products.map((p) => p.name).join(", ")} is on the Ikiguzi home page until ${live.endsAt.toLocaleDateString("en-GB")}.`,
     link: "/advertise",
   }).catch(() => {});
+  return live;
+}
+
+/** Puts every paid new-style ad live. Runs when the banner is read, so a booking can never be left waiting. */
+async function activatePaid() {
+  const waiting = await AdBooking.find({ status: "PAID", paymentStatus: "SUCCESS", displaySeconds: { $ne: null } }).select("_id").lean();
+  for (const b of waiting) await goLive(b._id).catch((e) => console.error("Ad go-live:", e.message));
+}
+
+/** Ikiguzi approves a booking that is still waiting (older flat-fee bookings, or one that did not go live by itself). */
+async function approve(admin, id) {
+  const booking = await load(id);
+  const live = await goLive(booking._id, idOf(admin));
+  if (!live) throw notPossible(booking);
   return { message: "Approved: the ad is live.", booking: view(live) };
 }
 
@@ -273,9 +352,11 @@ async function approve(admin, id) {
 async function reject(admin, id, { reason = "" } = {}) {
   const booking = await load(id);
   const why = String(reason || "").trim();
-  if (booking.status === "PAID" && why.length < 5) throw httpError(400, "Tell the seller why, in a few words.");
+  if (why.length < 5) throw httpError(400, "Tell the seller why, in a few words.");
+  // A new-style ad's money is still in escrow while it runs, so it can be refunded; an older one was already counted as revenue.
+  const refundable = earnsAtEnd(booking) ? ["PAID", "LIVE", "PAUSED"] : ["PAID"];
   const claimed = await AdBooking.updateOne(
-    { _id: booking._id, status: "PAID" },
+    { _id: booking._id, status: { $in: refundable } },
     { $set: { status: "REJECTED", rejectionReason: why.slice(0, 500), reviewedBy: idOf(admin), reviewedAt: new Date() } },
   );
   if (!claimed.modifiedCount) throw notPossible(booking);
@@ -330,6 +411,7 @@ async function remove(admin, id, { reason = "" } = {}) {
     { $set: { status: "REMOVED", rejectionReason: String(reason || "").trim().slice(0, 500) || null, reviewedBy: idOf(admin), reviewedAt: new Date() } },
   );
   if (!claimed.modifiedCount) throw notPossible(booking);
+  if (booking.status !== "ENDED") await recogniseRevenue(booking); // it ran, so the fee is earned
   return { message: "The ad was removed.", booking: view(await AdBooking.findById(booking._id)) };
 }
 
@@ -340,8 +422,9 @@ async function remove(admin, id, { reason = "" } = {}) {
  * Older bookings have no title or seconds (the banner uses its own defaults).
  */
 async function liveHeroProducts(limit = 6) {
+  await endExpired();
+  await activatePaid(); // before reading the clock: an ad that just went live must count as started
   const now = new Date();
-  await endExpired(now);
   const live = await AdBooking.find({
     status: "LIVE", paymentStatus: "SUCCESS", startsAt: { $lte: now }, endsAt: { $gt: now },
   }).sort({ startsAt: -1 }).limit(50).lean();
@@ -374,5 +457,5 @@ async function liveHeroProducts(limit = 6) {
 
 module.exports = {
   pricing, paymentMethods, quote, create, markPaid, markFailed, cancel, mine, forAdmin,
-  approve, reject, deactivate, reactivate, remove, liveHeroProducts, LABELS,
+  approve, reject, deactivate, reactivate, remove, track, activatePaid, liveHeroProducts, LABELS,
 };

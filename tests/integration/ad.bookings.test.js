@@ -18,8 +18,8 @@ const adBookings = require("../../src/services/adBooking.service");
 jest.setTimeout(90000);
 
 // "Advertise here": banner time is priced per second (5,000 RWF = 3 seconds,
-// +1,000 RWF per extra second); the server prices it, a verified payment moves
-// the booking to PAID, and Ikiguzi approves it before it shows.
+// +1,000 RWF per extra second); the server prices it, and a verified payment
+// puts the ad live straight away. Ikiguzi can pause, remove or refund it.
 describe("Home page ad bookings", () => {
   let app;
   let seller, otherSeller, buyer, admin, products;
@@ -91,9 +91,9 @@ describe("Home page ad bookings", () => {
     test("what the client sends about status, payment or seconds is ignored", async () => {
       const res = await book("seller", ad({ seconds: 3, displaySeconds: 60, status: "LIVE", paymentStatus: "SUCCESS", amount: undefined, days: 999, startsAt: new Date() }));
       expect(res.status).toBe(200);
-      expect([res.body.booking.displaySeconds, res.body.booking.status, res.body.booking.amount]).toEqual([3, "PAID", 5000]);
+      expect([res.body.booking.displaySeconds, res.body.booking.status, res.body.booking.amount]).toEqual([3, "LIVE", 5000]);
       expect(res.body.booking.days).toBe(7);
-      expect(await hero()).toEqual([]);
+      expect((await hero()).map((h) => h.displaySeconds)).toEqual([3]); // live because it was paid for, not because the client said so
     });
 
     test("the title and description are required and bounded", async () => {
@@ -140,21 +140,51 @@ describe("Home page ad bookings", () => {
   });
 
   describe("approval and the home banner", () => {
-    test("buyers can't advertise; a paid ad shows only after Ikiguzi approves it, with its title, description and seconds", async () => {
+    test("buyers can't advertise; a paid ad goes live by itself, with its title, description and seconds", async () => {
       expect((await book("buyer")).status).toBe(403);
+      expect(await hero()).toEqual([]);
       const res = await book("seller", ad({ seconds: 10 }));
-      expect([res.body.booking.status, res.body.booking.paymentStatus, res.body.booking.amount]).toEqual(["PAID", "SUCCESS", 12000]);
+      expect([res.body.booking.status, res.body.booking.paymentStatus, res.body.booking.amount]).toEqual(["LIVE", "SUCCESS", 12000]);
 
-      expect(await hero()).toEqual([]); // paid is not live
-      const attention = await request(app).get("/api/admin/attention").set(as("admin"));
-      expect(attention.body.items.find((i) => i.key === "adBookings").count).toBe(1);
-      expect((await request(app).post(`/api/ad-bookings/${res.body.booking.id}/approve`).set(as("seller"))).status).toBe(403);
-
-      const ok = await approve(res.body.booking.id);
-      expect(ok.body.booking.status).toBe("LIVE");
       const [slide] = await hero();
       expect([slide.product.name, slide.title, slide.description, slide.displaySeconds]).toEqual(["Lamp", "Lamps that last", "Warm light for every room in the house.", 10]);
-      expect(new Date(ok.body.booking.endsAt) > new Date()).toBe(true);
+      expect(new Date(res.body.booking.endsAt) > new Date()).toBe(true);
+      expect((await request(app).post(`/api/ad-bookings/${res.body.booking.id}/approve`).set(as("seller"))).status).toBe(403);
+      expect((await approve(res.body.booking.id)).status).toBe(409); // nothing left to approve
+    });
+
+    test("a booking left PAID (the page never saw it go live) goes live the next time the banner is read", async () => {
+      const b = await AdBooking.create({
+        bookingNumber: "ADB-STUCK-1", seller: String(seller._id), sellerRole: "vendor", product: String(products[0]._id),
+        products: [{ id: String(products[0]._id), name: "Lamp", image: "/x.png" }], title: "Stuck", description: "Was waiting.",
+        displaySeconds: 11, pricePerProduct: 13000, amount: 13000, days: 7, paymentMethod: "MOMO", status: "PAID", paymentStatus: "SUCCESS", paidAt: new Date(),
+      });
+      expect((await hero()).map((h) => [h.title, h.displaySeconds])).toEqual([["Stuck", 11]]);
+      expect((await AdBooking.findById(b._id)).status).toBe("LIVE");
+    });
+
+    test("the fee stays in escrow while the ad runs and becomes Ikiguzi's once, when it ends", async () => {
+      const b = await book("seller", ad({ seconds: 5 }));
+      expect(await feeEntries(b.body.booking)).toBe(0);
+      await hero();
+      expect(await feeEntries(b.body.booking)).toBe(0);
+      await AdBooking.updateOne({ _id: b.body.booking.id }, { $set: { endsAt: new Date(Date.now() - 1000) } });
+      await hero();
+      await hero();
+      expect((await AdBooking.findById(b.body.booking.id)).status).toBe("ENDED");
+      expect(await feeEntries(b.body.booking)).toBe(1);
+    });
+
+    test("an older flat-fee booking still waits for approval, and earns its fee once when approved", async () => {
+      const b = await AdBooking.create({
+        bookingNumber: "ADB-OLD-PAID", seller: String(seller._id), sellerRole: "vendor", pricePerProduct: 1000, amount: 1000, days: 7,
+        products: [{ id: String(products[1]._id), name: "Chair", image: "/x.png" }], status: "PAID", paymentStatus: "SUCCESS", paidAt: new Date(),
+      });
+      expect(await hero()).toEqual([]);
+      const [a, c] = await Promise.all([approve(b._id), approve(b._id)]);
+      expect([a.status, c.status].sort()).toEqual([200, 409]);
+      expect(await feeEntries(b)).toBe(1);
+      expect((await hero()).length).toBe(1);
     });
 
     test("every ad keeps its own purchased seconds", async () => {
@@ -202,11 +232,11 @@ describe("Home page ad bookings", () => {
       expect(await AdBooking.countDocuments({})).toBe(1);
     });
 
-    test("approving twice at once earns the fee once", async () => {
+    test("admin clicks on an ad that is already live change nothing", async () => {
       const b = await book("seller", ad());
       const [a, c] = await Promise.all([approve(b.body.booking.id), approve(b.body.booking.id)]);
-      expect([a.status, c.status].sort()).toEqual([200, 409]);
-      expect(await feeEntries(b.body.booking)).toBe(1);
+      expect([a.status, c.status]).toEqual([409, 409]);
+      expect(await feeEntries(b.body.booking)).toBe(0);
     });
 
     test("an older flat-fee booking with no title still shows, with the banner's own timing", async () => {
@@ -254,13 +284,12 @@ describe("Home page ad bookings", () => {
       const first = await paymentService.settleGatewayPayment({ payment, provider: "PAYPACK", status: "SUCCESSFUL", amount: 12000 });
       const again = await paymentService.settleGatewayPayment({ payment, provider: "PAYPACK", status: "SUCCESSFUL", amount: 12000 });
       expect([first.status, again.status]).toEqual(["SUCCESS", "ALREADY_PROCESSED"]);
-      expect((await AdBooking.findById(booking._id)).status).toBe("PAID");
+      expect((await AdBooking.findById(booking._id)).status).toBe("LIVE");
       // Even calling the fulfilment step directly again changes nothing.
       expect(await adBookings.markPaid(await Payment.findById(payment._id))).toBeNull();
       const ledgerIn = await LedgerEntry.countDocuments({ transactionReference: booking.bookingNumber, entryType: "PAYMENT_RECEIVED" });
       expect(ledgerIn).toBe(1);
-      // PAID is still not on the banner.
-      expect(await hero()).toEqual([]);
+      expect((await hero()).length).toBe(1);
     });
 
     test("a payment for a different amount never activates the booking", async () => {
@@ -290,37 +319,68 @@ describe("Home page ad bookings", () => {
       expect((await request(app).post(`/api/ad-bookings/${booking._id}/cancel`).set(as("seller"))).status).toBe(409);
     });
 
-    test("money that still arrives after a cancel is not lost: the ad goes to PAID", async () => {
+    test("money that still arrives after a cancel is not lost: the ad goes live", async () => {
       const { booking, payment } = await waiting();
       await request(app).post(`/api/ad-bookings/${booking._id}/cancel`).set(as("seller"));
       await paymentService.settleGatewayPayment({ payment, provider: "PAYPACK", status: "SUCCESSFUL", amount: 12000 });
       const paid = await AdBooking.findById(booking._id);
-      expect([paid.status, paid.paymentStatus]).toEqual(["PAID", "SUCCESS"]);
+      expect([paid.status, paid.paymentStatus]).toEqual(["LIVE", "SUCCESS"]);
     });
   });
 
-  test("a rejected booking is refunded to the number that paid", async () => {
+  test("a rejected ad is taken down and refunded to the number that paid, without Ikiguzi earning a fee", async () => {
     const res = await book("seller", ad({ seconds: 5 }));
+    expect((await hero()).length).toBe(1);
     expect((await request(app).post(`/api/ad-bookings/${res.body.booking.id}/reject`).set(as("admin")).send({ reason: "no" })).status).toBe(400);
     const rejected = await request(app).post(`/api/ad-bookings/${res.body.booking.id}/reject`).set(as("admin")).send({ reason: "The photo is blurry." });
     expect(rejected.body.booking.status).toBe("REJECTED");
     const refund = await Disbursement.findOne({ idempotencyKey: `ad-booking-refund:${res.body.booking.id}` });
     expect([refund.kind, Number(refund.amount)]).toEqual(["REFUND", 7000]);
     expect(refund.phone).toContain("788123456");
-    // Can't approve it afterwards, and it never shows.
-    expect((await approve(res.body.booking.id)).status).toBe(409);
     expect(await hero()).toEqual([]);
+    expect(await feeEntries(res.body.booking)).toBe(0);
+    expect((await approve(res.body.booking.id)).status).toBe(409);
+    expect((await request(app).post(`/api/ad-bookings/${res.body.booking.id}/reject`).set(as("admin")).send({ reason: "Again, please." })).status).toBe(409);
   });
 
-  test("sellers see their own ads with the payment state", async () => {
-    await book("seller", ad({ seconds: 4 }));
-    const mine = await request(app).get("/api/ad-bookings/mine").set(as("seller"));
-    expect(mine.body.bookings.length).toBe(1);
-    expect([mine.body.bookings[0].paymentLabel, mine.body.bookings[0].statusLabel]).toEqual(["Payment successful", "Paid: Ikiguzi is reviewing it"]);
-    expect((await request(app).get("/api/ad-bookings/mine").set(as("otherSeller"))).body.bookings).toEqual([]);
-    const admin1 = await request(app).get("/api/ad-bookings/admin?status=PAID").set(as("admin"));
+  test("sellers see how their ad is used: where it sits in the banner, its share of the time, and its views and clicks", async () => {
+    const mineOf = async (who) => (await request(app).get("/api/ad-bookings/mine").set(as(who))).body.bookings;
+    const first = await book("seller", ad({ productId: String(products[0]._id), seconds: 10 }));
+    await AdBooking.updateOne({ _id: first.body.booking.id }, { $set: { startsAt: new Date(Date.now() - 60000) } });
+    const second = await book("seller", ad({ productId: String(products[1]._id), seconds: 5, title: "Chairs" }));
+
+    const rows = await mineOf("seller");
+    const a = rows.find((r) => r.id === first.body.booking.id);
+    const c = rows.find((r) => r.id === second.body.booking.id);
+    expect([a.statusLabel, a.paymentLabel, a.daysLeft]).toEqual(["Live on the home page", "Payment successful", 7]);
+    expect(a.usage).toEqual({ showing: true, position: 2, liveAds: 2, secondsPerTurn: 10, cycleSeconds: 15, sharePercent: 67 });
+    expect([c.usage.position, c.usage.sharePercent]).toEqual([1, 33]);
+    expect(await mineOf("otherSeller")).toEqual([]);
+
+    // A live ad whose product is off sale says so instead of claiming it shows.
+    await Product.updateOne({ _id: products[1]._id }, { $set: { status: "OUT_OF_STOCK" } });
+    expect((await mineOf("seller")).find((r) => r.id === c.id).usage).toEqual({ showing: false });
+
+    const admin1 = await request(app).get("/api/ad-bookings/admin?status=LIVE").set(as("admin"));
     expect(admin1.body.bookings[0].sellerName).toBe("Kigali Shop");
     expect((await request(app).get("/api/ad-bookings/admin").set(as("seller"))).status).toBe(403);
+  });
+
+  test("the banner counts views and clicks, only for live ads", async () => {
+    const live = await book("seller", ad());
+    const number = live.body.booking.bookingNumber;
+    const send = (id, event) => request(app).post("/api/ad-bookings/track").send({ id, event });
+    for (const event of ["view", "view", "view", "click"]) expect((await send(number, event)).status).toBe(200);
+    expect((await send(number, "purchase")).status).toBe(400);
+    expect((await send("not-an-ad", "view")).status).toBe(400);
+    await send("ADB-DOES-NOT-EXIST", "view"); // unknown ads are ignored, not an error
+    let row = (await request(app).get("/api/ad-bookings/mine").set(as("seller"))).body.bookings[0];
+    expect([row.views, row.clicks]).toEqual([3, 1]);
+
+    await request(app).post(`/api/ad-bookings/${live.body.booking.id}/deactivate`).set(as("admin"));
+    await send(number, "view");
+    row = (await request(app).get("/api/ad-bookings/mine").set(as("seller"))).body.bookings[0];
+    expect(row.views).toBe(3);
   });
 
   test("riders waiting for approval show in Needs your attention", async () => {

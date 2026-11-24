@@ -31,5 +31,7 @@ module.exports = {
   // Reviews, problem reports and similar writes.
   // Address search (OpenStreetMap allows little traffic): 60 per 5 minutes.
   geocode: make(5, 60, "Too many address searches. Wait a moment and try again."),
+  // Banner views and clicks from the home page: 300 per 5 minutes (a busy shared connection still fits).
+  adTrack: make(5, 300, "Too many requests. Try again in a moment."),
   write: make(10, 30, "You are doing that too often. Wait a few minutes and try again."),
 };

@@ -2,7 +2,7 @@
 const express = require("express");
 const bookings = require("../services/adBooking.service");
 const { protect, authorize } = require("../middleware/auth.middleware");
-const { write } = require("../middleware/rateLimits");
+const { write, adTrack } = require("../middleware/rateLimits");
 
 const router = express.Router();
 const run = (fn) => async (req, res) => {
@@ -18,6 +18,8 @@ const run = (fn) => async (req, res) => {
 router.get("/pricing", run(() => bookings.pricing()));
 router.get("/quote", run((req) => bookings.quote(req.query)));
 router.get("/payment-methods", run(() => bookings.paymentMethods()));
+// The banner reports views and clicks of live ads (public: shoppers may be signed out).
+router.post("/track", adTrack, run((req) => bookings.track(req.body?.id, req.body?.event)));
 
 router.use(protect);
 router.get("/mine", run((req) => bookings.mine(req.user)));

@@ -705,6 +705,9 @@ module.exports = [
       description: str({ len: 1000 }),
       // Seconds in the banner per turn, worked out by the server from what was paid.
       displaySeconds: int(),
+      // Times shown in the banner and times Buy now / Description was pressed.
+      views: int({ required: true, default: 0 }),
+      clicks: int({ required: true, default: 0 }),
       placement: en(["HOMEPAGE_HERO"], { default: "HOMEPAGE_HERO", required: true }),
       pricePerProduct: money({ required: true }),
       amount: money({ required: true }),
