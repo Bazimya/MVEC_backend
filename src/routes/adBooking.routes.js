@@ -14,16 +14,22 @@ const run = (fn) => async (req, res) => {
   }
 };
 
-// Public: what it costs.
+// Public: what it costs, what a given time or amount buys, and how it can be paid.
 router.get("/pricing", run(() => bookings.pricing()));
+router.get("/quote", run((req) => bookings.quote(req.query)));
+router.get("/payment-methods", run(() => bookings.paymentMethods()));
 
 router.use(protect);
 router.get("/mine", run((req) => bookings.mine(req.user)));
 router.post("/", write, run((req) => bookings.create(req.user, req.body || {})));
+router.post("/:id/cancel", write, run((req) => bookings.cancel(req.user, req.params.id)));
 
 // Ikiguzi
 router.get("/admin", authorize("super_admin"), run((req) => bookings.forAdmin(req.query)));
 router.post("/:id/approve", authorize("super_admin"), run((req) => bookings.approve(req.user, req.params.id)));
 router.post("/:id/reject", authorize("super_admin"), run((req) => bookings.reject(req.user, req.params.id, req.body || {})));
+router.post("/:id/deactivate", authorize("super_admin"), run((req) => bookings.deactivate(req.user, req.params.id)));
+router.post("/:id/reactivate", authorize("super_admin"), run((req) => bookings.reactivate(req.user, req.params.id)));
+router.post("/:id/remove", authorize("super_admin"), run((req) => bookings.remove(req.user, req.params.id, req.body || {})));
 
 module.exports = router;

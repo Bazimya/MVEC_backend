@@ -24,6 +24,13 @@ const DEFAULTS = {
   // "Advertise here": the flat fee per product, and how long the ad runs.
   adPricePerProduct: 1000,
   adDays: 7,
+  // Home banner pricing (utils/adPricing.js): adBasePrice buys adBaseSeconds in
+  // the banner, and each extra second costs adExtraSecondPrice. adDays is how
+  // long a booking stays eligible to show once Ikiguzi approves it.
+  adBasePrice: 5000,
+  adBaseSeconds: 3,
+  adExtraSecondPrice: 1000,
+  adMaxSeconds: 60,
 };
 const LIMITS = {
   autoReleaseDays: [0, 30],
@@ -34,6 +41,10 @@ const LIMITS = {
   returnWindowDays: [0, 30],
   adPricePerProduct: [100, 1000000],
   adDays: [1, 90],
+  adBasePrice: [1000, 1000000],
+  adBaseSeconds: [1, 60],
+  adExtraSecondPrice: [100, 1000000],
+  adMaxSeconds: [3, 300],
 };
 
 let cache = { value: null, at: 0 };

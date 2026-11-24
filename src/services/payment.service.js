@@ -238,6 +238,8 @@ exports.settleGatewayPayment = async ({ payment, provider, status, amount, fee =
       { status: "FAILED", gatewayResponse: payload },
       { returnDocument: "after" }
     );
+    // A seller's home page ad was waiting on this payment: it will not be booked.
+    if (updated?.purpose === "AD_BOOKING") await require("./adBooking.service").markFailed(updated).catch((e) => console.error("Ad booking failure:", e.message));
     return { status: updated ? "FAILED" : "ALREADY_PROCESSED", payment: updated };
   }
 
@@ -249,7 +251,7 @@ exports.fulfilStandalonePayment = async (payment) => {
   if (payment.purpose === "BUYER_PREMIUM" && payment.user) {
     await require("./buyerSubscription.service").activatePremium({ userId: payment.user, paymentId: payment._id });
   }
-  // A seller paid for home page ad spots (reference ADB-<bookingId>-…).
+  // A seller paid for banner time on the home page (reference ADB-<bookingId>-…).
   if (payment.purpose === "AD_BOOKING") await require("./adBooking.service").markPaid(payment);
   // A vendor paid a wholesale order (reference WHS-<orderId>-…): lock it in escrow.
   if (payment.purpose === "WHOLESALE") {

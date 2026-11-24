@@ -688,8 +688,10 @@ module.exports = [
     },
   },
   {
-    // "Advertise here": a seller or supplier pays a flat fee per product for a
-    // spot in the home page hero; Ikiguzi approves it (or rejects and refunds).
+    // "Advertise here": a seller or supplier pays for banner time on the home
+    // page hero (priced per second, utils/adPricing.js); Ikiguzi approves it
+    // (or rejects and refunds). Older bookings were a flat fee per product and
+    // have no title or displaySeconds.
     model: "AdBooking", table: "ad_bookings", collection: "adbookings",
     fields: {
       bookingNumber: str({ len: 40, required: true, unique: true }),
@@ -697,11 +699,19 @@ module.exports = [
       sellerRole: en(["vendor", "supplier", "super_admin"], { default: "vendor", required: true }),
       // [{ id, name, image }]
       products: json([]),
+      // The advertised product, and the banner's big text and the line under it.
+      product: ref("products", { index: true, fk: false }),
+      title: str({ len: 120 }),
+      description: str({ len: 1000 }),
+      // Seconds in the banner per turn, worked out by the server from what was paid.
+      displaySeconds: int(),
       placement: en(["HOMEPAGE_HERO"], { default: "HOMEPAGE_HERO", required: true }),
       pricePerProduct: money({ required: true }),
       amount: money({ required: true }),
       days: int({ required: true, default: 7 }),
-      status: en(["AWAITING_PAYMENT", "PAID", "LIVE", "REJECTED", "ENDED", "CANCELLED"], { default: "AWAITING_PAYMENT", required: true, index: true }),
+      status: en(["AWAITING_PAYMENT", "PAID", "LIVE", "REJECTED", "ENDED", "CANCELLED", "PAUSED", "REMOVED"], { default: "AWAITING_PAYMENT", required: true, index: true }),
+      paymentMethod: en(["MOMO", "AIRTEL"]),
+      paymentStatus: en(["PENDING", "SUCCESS", "FAILED", "CANCELLED"], { default: "PENDING", required: true }),
       payment: ref("payments", { fk: false }),
       payerPhone: str({ len: 30 }),
       paidAt: date(),
