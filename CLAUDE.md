@@ -52,9 +52,9 @@ Tests need MySQL. `tests/helpers/mysql.js` creates and migrates the `_test` data
 
 ## "Advertise here" (`services/adBooking.service.js`, `/api/ad-bookings`)
 
-- This is separate from the pay-per-click campaigns (`advertising.service.js`). Vendors and suppliers pick products and pay `adPricePerProduct` (admin setting, default 1000 RWF) × the number of products by mobile money (standalone payment, purpose `AD_BOOKING`).
-- PAID bookings wait for an admin. Approve makes them LIVE in the home hero (`GET /api/advertisements?placement=HOMEPAGE_HERO` lists them first) for `adDays` (default 7). Reject refunds the paying number through `disbursement.queue`.
-- Ledger: when paid, BUYER_PAYMENTS → ESCROW_HOLDING. On approval, ESCROW_HOLDING → PLATFORM_REVENUE (`AD_PLACEMENT_FEE`). On rejection, ESCROW_HOLDING → BUYER_REFUND_HOLD.
+- This is separate from the pay-per-click campaigns (`advertising.service.js`). A vendor or supplier books one product with its own banner title and description, and pays the flat `adPrice` (admin setting, default 5,000 RWF) by MTN or Airtel mobile money (standalone payment, purpose `AD_BOOKING`). Every ad shows 5 seconds per turn (`utils/adPricing.js`, `SLIDE_SECONDS`); the client never sets the price or the time.
+- A verified payment makes the booking LIVE in the home hero (`GET /api/advertisements?placement=HOMEPAGE_HERO`) for `adDays` (default 7). Ikiguzi can pause, remove, or reject it, which refunds the paying number through `disbursement.queue`. Older bookings with no `displaySeconds` still wait in PAID for an admin.
+- Ledger: when paid, BUYER_PAYMENTS → ESCROW_HOLDING. When the ad ends or is removed, ESCROW_HOLDING → PLATFORM_REVENUE (`AD_PLACEMENT_FEE`); older bookings earned it on approval. On rejection, ESCROW_HOLDING → BUYER_REFUND_HOLD.
 - `admin.ops getAttention` also counts riders waiting for approval, returns waiting on Ikiguzi, late rider pickups, ready parcels with no rider for 30 minutes, and paid ad bookings.
 
 ## Money
@@ -77,7 +77,7 @@ This is KitchenLink's delivery-worker model, with one job per seller parcel.
 - Free-delivery coupons never cover rider parcels.
 
 **A job's life**
-- Early dispatch, as in KitchenLink: when the buyer pays, `orderPaid` creates a `Delivery` for each rider parcel with `readyAt: null` and offers it straight away, so a rider can head over while the seller prepares it. When the seller marks its part READY_FOR_SHIPMENT, `createForOrder` sets `readyAt` (`markReady`), or creates the job if none exists (cash on delivery, older orders).
+- Riders hear nothing when the buyer pays (`orderPaid` only nudges sellers with no pin). When the seller marks its part PROCESSING, `sellerStarted` creates a `Delivery` for each rider parcel with `readyAt: null` and offers it, so a rider can head over while the seller packs it. When the seller marks its part READY_FOR_SHIPMENT, `createForOrder` sets `readyAt` (`markReady`), or creates the job if none exists (cash on delivery, older orders).
 - A rider who accepted early follows the seller's steps. `sellerStepped` tells them about each one, and `markReady` tells them to collect, by SMS too. `serialize` returns `ready`, `waitingForSeller` and `progress`, a timeline from order placed to delivered. Picking up is refused until `readyAt` (`PARCEL_NOT_READY`). The late-pickup clock counts from the later of accepting and ready.
 - Before pickup a rider can hand a parcel back (`POST /api/rider/deliveries/:id/release`). A seller's parcel can take hours to be ready, so a rider is never stuck holding one.
 - Offers go to approved, online riders with a fresh position within the radius, nearest first.

@@ -48,7 +48,7 @@ async function ensureShop(supplier) {
     location: from.address?.city || "Kigali",
     status: "ACTIVE",
     // Riders collect from the supplier's pickup pin (supplierStore.syncShopPickup).
-    ...(from.pickupLat != null ? { pickupLat: from.pickupLat, pickupLng: from.pickupLng, riderDelivery: Boolean(from.riderDelivery) } : {}),
+    ...(from.pickupLat != null ? { pickupLat: from.pickupLat, pickupLng: from.pickupLng, riderDelivery: from.riderDelivery !== false && from.riderDelivery !== 0 } : {}),
   });
 }
 

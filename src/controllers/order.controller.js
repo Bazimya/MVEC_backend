@@ -372,6 +372,11 @@ async function advanceFulfilment({ order, status, actor, sellerIds = handover.ve
     await deliveryService.createForOrder(order, riderParcels);
     return order;
   }
+  // Likewise for preparing: this seller's parcel is offered to riders now.
+  if (next === "PROCESSING" && riderParcels.length && order.paymentStatus === "PAID" && FULFILMENT_FLOW.indexOf(order.orderStatus) >= FULFILMENT_FLOW.indexOf(next)) {
+    await deliveryService.sellerStarted(order, riderParcels);
+    return order;
+  }
   if (!FULFILMENT_FLOW.includes(next)) {
     throw checkoutService.httpError(400, "Choose one of: processing, ready for shipment, shipped, out for delivery. Delivery is confirmed with the buyer's code.");
   }
@@ -399,7 +404,9 @@ async function advanceFulfilment({ order, status, actor, sellerIds = handover.ve
   await order.save();
   socketService.emitOrderStatusUpdate(order);
   notifications.orderStatusChanged(order, actor).catch(() => {});
+  // Riders are told about a parcel only once its seller starts preparing it.
   if (next === "READY_FOR_SHIPMENT" && riderParcels.length) await deliveryService.createForOrder(order, riderParcels);
+  else if (next === "PROCESSING" && riderParcels.length) await deliveryService.sellerStarted(order, riderParcels);
   // A rider who accepted early follows the seller's steps.
   else if (riderParcels.length) await deliveryService.sellerStepped(order, riderParcels, next).catch(() => {});
   return order;

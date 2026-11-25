@@ -1,9 +1,9 @@
 // Ikiguzi riders deliver sellers' parcels, the way KitchenLink's delivery
 // workers deliver kitchens' orders:
 //
-//   buyer pays → a delivery job per rider parcel, offered straight away to
-//   the nearest approved, online riders (first to accept wins), so a rider
-//   can head over while the seller prepares it (KitchenLink's early dispatch)
+//   buyer pays → the seller marks the order preparing (or ready) → a delivery
+//   job per rider parcel, offered then to the nearest approved, online riders
+//   (first to accept wins), so a rider can head over while the seller packs it
 //   → the rider follows the seller's steps and is told when it's ready
 //   → picks it up (only once ready) → heads to the buyer → confirms with the
 //   buyer's code → the seller's money is released and the rider earns the fee.
@@ -123,8 +123,8 @@ const riderAccount = (rider, user) => ({
 
 /**
  * Turns the rider parcels of `vendorIds` into delivery jobs and offers them.
- * Called when the buyer pays (`ready: false`: the seller is still preparing)
- * and when a seller marks its part ready (a job made at payment becomes ready).
+ * Called when a seller marks its part preparing (`ready: false`) and when it
+ * marks it ready (a job made while preparing becomes ready).
  */
 async function createForOrder(order, vendorIds, { ready = true } = {}) {
   const created = [];
@@ -155,7 +155,7 @@ async function createForOrder(order, vendorIds, { ready = true } = {}) {
       readyAt: ready ? new Date() : null,
       history: [ready
         ? { status: "READY_FOR_SHIPMENT", at: new Date(), note: "Ready at the store" }
-        : { status: "READY_FOR_PICKUP", at: new Date(), note: "Order paid: offered to riders while the seller prepares it" }],
+        : { status: "READY_FOR_PICKUP", at: new Date(), note: "The seller is preparing it: offered to riders" }],
     });
     created.push(delivery);
     await dispatch(delivery._id);
@@ -163,11 +163,18 @@ async function createForOrder(order, vendorIds, { ready = true } = {}) {
   return created;
 }
 
-/** The buyer paid: every rider parcel is offered now, before the seller has it ready. */
+/**
+ * The buyer paid. Riders hear nothing yet: a parcel is offered only once its
+ * seller marks it preparing (sellerStarted) or ready. Sellers whose store has
+ * no pickup pin are told to deliver it themselves.
+ */
 async function orderPaid(order) {
   await nudgePinless(order).catch(() => {});
-  const vendorIds = (order.shippingBreakdown || []).filter((p) => p.method === "RIDER" && p.vendor).map((p) => idOf(p.vendor));
-  if (!vendorIds.length) return [];
+  return [];
+}
+
+/** A seller started preparing its part of a paid order: its rider parcels are offered now. */
+async function sellerStarted(order, vendorIds) {
   return createForOrder(order, vendorIds, { ready: false });
 }
 
@@ -864,6 +871,7 @@ async function reviewRider(riderId, { status, note } = {}) {
 }
 
 module.exports = {
+  sellerStarted,
   setArea,
   createForOrder, orderPaid, markReady, sellerStepped, dispatch, wakeRiders, expireStaleOffers, checkLatePickups, cancelForOrder, isRiderParcel,
   checkUnclaimed, sellerDelivers,

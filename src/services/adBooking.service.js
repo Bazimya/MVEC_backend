@@ -1,10 +1,10 @@
 // "Advertise here" on the home page: a seller (vendor) or supplier buys banner
-// time for one product. The price follows the seconds bought
-// (utils/adPricing.js: 5,000 RWF = 3 seconds, +1,000 RWF per extra second) and
-// is always worked out here, never taken from the client. The seller writes the
+// time for one product. Every ad costs one flat price (utils/adPricing.js,
+// adPrice, default 5,000 RWF) and shows for 5 seconds each turn of the banner;
+// both are worked out here, never taken from the client. The seller writes the
 // banner's title and description and pays by mobile money. As soon as the
 // payment is verified the ad goes LIVE (it runs for adDays, default 7, and each
-// turn of the banner shows it for the seconds it paid for). Ikiguzi can pause
+// turn of the banner shows it for 5 seconds). Ikiguzi can pause
 // it, remove it, or reject it and refund the number that paid.
 //
 //   AWAITING_PAYMENT → PAID → LIVE → ENDED
@@ -36,7 +36,7 @@ const httpError = (statusCode, message) => Object.assign(new Error(message), { s
 const idOf = (v) => String(v?._id || v?.id || v || "");
 const money = (n) => `${new Intl.NumberFormat("en-RW").format(Math.round(Number(n) || 0))} RWF`;
 const DAY = 24 * 3600 * 1000;
-const DEFAULT_SLIDE_SECONDS = 5; // what the banner gives an ad with no bought time (matches the website)
+const DEFAULT_SLIDE_SECONDS = adPricing.SLIDE_SECONDS; // every ad's time per turn (matches the website and the app)
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 const TITLE = { min: 3, max: 60 };
 const DESCRIPTION = { min: 5, max: 1000 };
@@ -58,7 +58,6 @@ async function pricing() {
   const rules = adPricing.rulesFrom(s);
   return {
     ...rules,
-    ladder: adPricing.ladder(rules),
     days: Number(s.adDays ?? 7),
     titleMax: TITLE.max,
     descriptionMax: DESCRIPTION.max,
@@ -78,14 +77,13 @@ function paymentMethods() {
   };
 }
 
-/** Quote for the seconds or amount a seller is considering. 400 for a price that isn't on the ladder. */
-async function quote({ seconds, amount } = {}) {
+/** What an ad costs: the same for every ad. */
+async function quote() {
   const p = await pricing();
-  const { seconds: s, amount: a } = adPricing.resolve({ seconds, amount }, p);
-  return { seconds: s, amount: a, days: p.days };
+  return { seconds: p.seconds, amount: p.price, days: p.days };
 }
 
-// New-style ads (bought by the second) earn Ikiguzi their fee when they finish;
+// New-style ads (title, description, 5 seconds a turn) earn Ikiguzi their fee when they finish;
 // older flat-fee bookings already did when they were approved.
 const earnsAtEnd = (b) => Boolean(b.displaySeconds);
 
@@ -121,15 +119,15 @@ const cleanText = (value, { min, max, label }) => {
 /**
  * Starts a booking for one product and sends the mobile money prompt to
  * `phoneNumber`. Only accounts that list products (vendors, suppliers) may.
- * The seller picks seconds (or an amount); the server prices it.
+ * The price and the banner time are the same for every ad; the server sets both.
  */
-async function create(user, { productId, title, description, seconds, amount, phoneNumber, paymentMethod } = {}) {
+async function create(user, { productId, title, description, phoneNumber, paymentMethod } = {}) {
   if (!SELLERS.includes(user.role)) throw httpError(403, "Only seller and supplier accounts can advertise. Open a store to advertise your products.");
   if (!orm.isValidObjectId(productId)) throw httpError(400, "Choose the product you want to advertise.");
   const cleanTitle = cleanText(title, { ...TITLE, label: "title" });
   const cleanDescription = cleanText(description, { ...DESCRIPTION, label: "description" });
   const price = await pricing();
-  const bought = adPricing.resolve({ seconds, amount }, price);
+  const bought = adPricing.resolve(null, price);
 
   const method = paymentMethods().methods.find((m) => m.id === String(paymentMethod || "").toUpperCase());
   if (!method) throw httpError(400, "Choose how you want to pay: MTN Mobile Money or Airtel Money.");
@@ -182,7 +180,7 @@ async function create(user, { productId, title, description, seconds, amount, ph
   return {
     message: fresh.status === "PAID"
       ? `Paid ${money(bought.amount)}. Ikiguzi will review your ad and tell you when it's live.`
-      : `${result.message} You pay ${money(bought.amount)} for ${bought.seconds} seconds in the banner.`,
+      : `${result.message} You pay ${money(bought.amount)} for ${price.days} days in the home page banner.`,
     booking: view(fresh),
     paymentId: result.paymentId,
     status: result.status,

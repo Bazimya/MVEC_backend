@@ -41,7 +41,8 @@ function fieldsFrom(body = {}, current = null) {
 async function syncShopPickup(supplier, store) {
   if (!store?.isPrimary) return;
   const Store = require("../models/Store");
-  const set = { riderDelivery: Boolean(store.riderDelivery) && store.pickupLat != null };
+  // Riders stay on unless the supplier turned them off; they start collecting once there is a pin.
+  const set = { riderDelivery: store.riderDelivery !== false && store.riderDelivery !== 0 };
   if (store.pickupLat != null) Object.assign(set, { pickupLat: store.pickupLat, pickupLng: store.pickupLng });
   await Store.updateMany({ vendor: supplier.user }, { $set: set });
 }

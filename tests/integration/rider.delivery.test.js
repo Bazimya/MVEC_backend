@@ -71,9 +71,16 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     const bought = await request(app).post("/api/orders/direct-checkout").set(as("buyer")).send({ ...order, items: [{ productId: String(product._id), quantity: 1 }] });
     expect(bought.status).toBe(201);
     const id = bought.body.order.id;
-    expect((await request(app).post("/api/payments/pay").set(as("buyer")).send({ orderId: id, phoneNumber: "0788123456" })).body.status).toBe("SUCCESS");
+    const paid = await request(app).post("/api/payments/pay").set(as("buyer")).send({ orderId: id, phoneNumber: "0788123456" });
+    expect(paid.body.status).toBe("SUCCESS");
     return id;
   };
+  const preparing = async (id) => {
+    expect((await request(app).patch("/api/orders/vendor/status").set(as("vendor")).send({ orderId: id, status: "PROCESSING" })).status).toBe(200);
+    return id;
+  };
+  // Riders hear about a parcel only once the seller starts preparing it.
+  const preparedOrder = async () => preparing(await paidOrder());
   const goOnline = async (who, at) => {
     expect((await request(app).patch("/api/rider/location").set(as(who)).send(at)).status).toBe(200);
     return request(app).patch("/api/rider/availability").set(as(who)).send({ isOnline: true });
@@ -93,7 +100,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     expect(res.status).toBe(200);
     expect(res.body.rider.districts).toEqual(["Kicukiro", "Gasabo"]);
     await Store.updateMany({ vendor: vendor._id }, { "address.city": "Gasabo" });
-    await paidOrder();
+    await preparedOrder();
     const [job] = await Delivery.find({}).lean();
     expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
   });
@@ -303,13 +310,17 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     expect(wallet.available).toBe(earned - 1000);
     expect((await request(app).get("/api/rider/wallet/withdrawals").set(as("riderA"))).body.payouts).toHaveLength(1);
   });
-  test("early dispatch: offered once paid, the rider follows the seller's steps and collects only once ready", async () => {
+  test("riders hear nothing when the buyer pays; offered once the seller is preparing it, they follow the seller's steps and collect only once ready", async () => {
     const Notification = require("../../src/models/Notification");
     const titlesFor = async (user) => (await Notification.find({ recipient: user._id }).lean()).map((n) => n.title);
     expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
     const id = await paidOrder();
+    expect((await request(app).get("/api/rider/deliveries/available").set(as("riderA"))).body.deliveries).toHaveLength(0);
+    expect(await Delivery.countDocuments({})).toBe(0);
+    expect((await titlesFor(riderA)).some((t) => /New delivery|waiting near you/.test(t))).toBe(false);
+    await preparing(id);
 
-    // Offered as soon as the buyer pays, saying the seller is still preparing it.
+    // Offered once the seller marks it preparing, saying the seller is still packing it.
     const offers = (await request(app).get("/api/rider/deliveries/available").set(as("riderA"))).body.deliveries;
     expect(offers).toHaveLength(1);
     expect([offers[0].ready, offers[0].waitingForSeller]).toEqual([false, true]);
@@ -339,7 +350,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
 
   test("a rider who accepted early can hand the parcel back before pickup", async () => {
     expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
-    await paidOrder();
+    await preparedOrder();
     const [offer] = (await request(app).get("/api/rider/deliveries/available").set(as("riderA"))).body.deliveries;
     await request(app).post(`/api/rider/deliveries/${offer.id}/accept`).set(as("riderA"));
     expect((await request(app).post(`/api/rider/deliveries/${offer.id}/release`).set(as("riderA"))).status).toBe(200);
@@ -354,7 +365,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     const Notification = require("../../src/models/Notification");
     expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
     expect((await request(app).patch("/api/rider/availability").set(as("riderA")).send({ isOnline: false })).status).toBe(200);
-    await paidOrder();
+    await preparedOrder();
     const [job] = await Delivery.find({}).lean();
     expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
     await new Promise((r) => setTimeout(r, 200)); // notifications are sent in the background
@@ -373,13 +384,13 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
   test("a rider working the store's district is woken even with no position yet", async () => {
     await Store.updateMany({ vendor: vendor._id }, { "address.city": "Gasabo" });
     expect((await request(app).patch("/api/rider/area").set(as("riderA")).send({ district: "Gasabo" })).status).toBe(200);
-    await paidOrder();
+    await preparedOrder();
     const [job] = await Delivery.find({}).lean();
     expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
   });
 
   test("no rider takes it: the seller is told and delivers it, earning the fee", async () => {
-    const id = await paidOrder();
+    const id = await preparedOrder();
     const fee = (await Order.findById(id)).shippingBreakdown[0].fee;
     const [job] = await Delivery.find({}).lean();
     // Too early: nobody is told yet.
@@ -401,7 +412,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
 
   test("the seller can't take a parcel back once a rider accepted it", async () => {
     expect((await goOnline("riderA", NEAR_STORE)).status).toBe(200);
-    const id = await paidOrder();
+    const id = await preparedOrder();
     const [job] = await Delivery.find({}).lean();
     expect((await request(app).post(`/api/rider/deliveries/${job._id}/accept`).set(as("riderA"))).status).toBe(200);
     const res = await request(app).post(`/api/orders/vendor/${id}/self-deliver`).set(as("vendor"));
@@ -422,6 +433,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
       expect(bought.status).toBe(201);
       const id = bought.body.order.id;
       expect((await request(app).post("/api/payments/pay").set(as("buyer")).send({ orderId: id, phoneNumber: "0788123456" })).body.status).toBe("SUCCESS");
+      await preparing(id);
       const saved = await Order.findById(id);
       expect(saved.shippingBreakdown[0].method).toBe("RIDER");
       expect(Math.abs(saved.shippingAddress.lat - BUYER.lat) < 1e-6).toBe(true);
@@ -436,7 +448,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
   test("nobody in range: a rider last seen a little farther is woken", async () => {
     // About 12 km from the store: past the 8 km offer range, inside twice it.
     expect((await goOnline("riderA", { lat: -2.0, lng: 30.02 })).status).toBe(200);
-    await paidOrder();
+    await preparedOrder();
     const [job] = await Delivery.find({}).lean();
     expect((job.offers || []).length).toBe(0);
     expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
@@ -450,7 +462,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     global.fetch = async (url) => ({ ok: true, json: async () => (String(url).includes("/reverse") ? { address: { county: "Gasabo", state: "Kigali City" } } : []) });
     try {
       expect((await request(app).patch("/api/rider/area").set(as("riderA")).send({ districts: ["Gasabo"] })).status).toBe(200);
-      await paidOrder();
+      await preparedOrder();
       const [job] = await Delivery.find({}).lean();
       expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
     } finally {

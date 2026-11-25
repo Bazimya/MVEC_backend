@@ -17,8 +17,8 @@ const adBookings = require("../../src/services/adBooking.service");
 
 jest.setTimeout(90000);
 
-// "Advertise here": banner time is priced per second (5,000 RWF = 3 seconds,
-// +1,000 RWF per extra second); the server prices it, and a verified payment
+// "Advertise here": every ad costs one flat price (5,000 RWF) and shows 5
+// seconds a turn; the server sets both, and a verified payment
 // puts the ad live straight away. Ikiguzi can pause, remove or refund it.
 describe("Home page ad bookings", () => {
   let app;
@@ -67,33 +67,22 @@ describe("Home page ad bookings", () => {
   const approve = (id) => request(app).post(`/api/ad-bookings/${id}/approve`).set(as("admin"));
   const feeEntries = (b) => LedgerEntry.countDocuments({ transactionReference: b.bookingNumber, entryType: "AD_PLACEMENT_FEE" });
 
-  describe("pricing, bought time and validation", () => {
-    test("5,000 RWF is 3 seconds; 12,000 is 10; 22,000 is 20 (by seconds or by amount)", async () => {
-      const cases = [[{ seconds: 3 }, 5000, 3], [{ seconds: 10 }, 12000, 10], [{ seconds: 20 }, 22000, 20], [{ seconds: undefined, amount: 12000 }, 12000, 10], [{ seconds: undefined, amount: 22000 }, 22000, 20], [{ seconds: undefined, amount: 5000 }, 5000, 3]];
-      for (const [extra, amount, seconds] of cases) {
+  describe("pricing, banner time and validation", () => {
+    test("every ad costs the flat price and shows 5 seconds, whatever the client asks for", async () => {
+      for (const extra of [{}, { seconds: 20 }, { amount: 100 }, { seconds: 60, amount: 999999 }]) {
         await AdBooking.deleteMany({});
         const res = await book("seller", ad(extra));
         expect(res.status).toBe(200);
-        expect([res.body.booking.amount, res.body.booking.displaySeconds, res.body.booking.paymentMethod]).toEqual([amount, seconds, "MOMO"]);
+        expect([res.body.booking.amount, res.body.booking.displaySeconds, res.body.booking.paymentMethod]).toEqual([5000, 5, "MOMO"]);
       }
-    });
-
-    test("invalid amounts and seconds are rejected and nothing is booked", async () => {
-      const bad = [{ seconds: undefined, amount: 4000 }, { seconds: undefined, amount: 0 }, { seconds: undefined, amount: 5500 }, { seconds: undefined, amount: -5000 }, { seconds: 2 }, { seconds: 0 }, { seconds: 3.5 }, { seconds: 999 }, { seconds: 10, amount: 5000 }, { seconds: undefined, amount: undefined }];
-      for (const extra of bad) {
-        const res = await book("seller", ad(extra));
-        expect(res.status).toBe(400);
-      }
-      expect(await AdBooking.countDocuments({})).toBe(0);
-      expect(await Payment.countDocuments({})).toBe(0);
     });
 
     test("what the client sends about status, payment or seconds is ignored", async () => {
-      const res = await book("seller", ad({ seconds: 3, displaySeconds: 60, status: "LIVE", paymentStatus: "SUCCESS", amount: undefined, days: 999, startsAt: new Date() }));
+      const res = await book("seller", ad({ seconds: 3, displaySeconds: 60, status: "LIVE", paymentStatus: "SUCCESS", amount: 1, days: 999, startsAt: new Date() }));
       expect(res.status).toBe(200);
-      expect([res.body.booking.displaySeconds, res.body.booking.status, res.body.booking.amount]).toEqual([3, "LIVE", 5000]);
+      expect([res.body.booking.displaySeconds, res.body.booking.status, res.body.booking.amount]).toEqual([5, "LIVE", 5000]);
       expect(res.body.booking.days).toBe(7);
-      expect((await hero()).map((h) => h.displaySeconds)).toEqual([3]); // live because it was paid for, not because the client said so
+      expect((await hero()).map((h) => h.displaySeconds)).toEqual([5]); // live because it was paid for, not because the client said so
     });
 
     test("the title and description are required and bounded", async () => {
@@ -115,11 +104,9 @@ describe("Home page ad bookings", () => {
 
     test("pricing, quote and payment methods are public", async () => {
       const p = (await request(app).get("/api/ad-bookings/pricing")).body;
-      expect([p.basePrice, p.baseSeconds, p.extraSecondPrice, p.days]).toEqual([5000, 3, 1000, 7]);
-      expect(p.ladder.find((r) => r.seconds === 10).amount).toBe(12000);
-      const q = await request(app).get("/api/ad-bookings/quote?amount=22000");
-      expect([q.body.seconds, q.body.amount]).toEqual([20, 22000]);
-      expect((await request(app).get("/api/ad-bookings/quote?amount=4500")).status).toBe(400);
+      expect([p.price, p.seconds, p.days]).toEqual([5000, 5, 7]);
+      const q = (await request(app).get("/api/ad-bookings/quote?amount=22000")).body;
+      expect([q.seconds, q.amount, q.days]).toEqual([5, 5000, 7]);
       const m = (await request(app).get("/api/ad-bookings/payment-methods")).body.methods;
       expect(m.map((x) => x.id)).toEqual(["MOMO", "AIRTEL"]);
       expect(m.every((x) => x.available)).toBe(true);
@@ -144,10 +131,10 @@ describe("Home page ad bookings", () => {
       expect((await book("buyer")).status).toBe(403);
       expect(await hero()).toEqual([]);
       const res = await book("seller", ad({ seconds: 10 }));
-      expect([res.body.booking.status, res.body.booking.paymentStatus, res.body.booking.amount]).toEqual(["LIVE", "SUCCESS", 12000]);
+      expect([res.body.booking.status, res.body.booking.paymentStatus, res.body.booking.amount]).toEqual(["LIVE", "SUCCESS", 5000]);
 
       const [slide] = await hero();
-      expect([slide.product.name, slide.title, slide.description, slide.displaySeconds]).toEqual(["Lamp", "Lamps that last", "Warm light for every room in the house.", 10]);
+      expect([slide.product.name, slide.title, slide.description, slide.displaySeconds]).toEqual(["Lamp", "Lamps that last", "Warm light for every room in the house.", 5]);
       expect(new Date(res.body.booking.endsAt) > new Date()).toBe(true);
       expect((await request(app).post(`/api/ad-bookings/${res.body.booking.id}/approve`).set(as("seller"))).status).toBe(403);
       expect((await approve(res.body.booking.id)).status).toBe(409); // nothing left to approve
@@ -187,13 +174,13 @@ describe("Home page ad bookings", () => {
       expect((await hero()).length).toBe(1);
     });
 
-    test("every ad keeps its own purchased seconds", async () => {
+    test("every ad gets the same 5 seconds, whatever was asked for", async () => {
       for (const [i, seconds] of [3, 10, 20].entries()) {
         const b = await book("seller", ad({ productId: String(products[i]._id), seconds }));
         await approve(b.body.booking.id);
       }
       const bySeconds = Object.fromEntries((await hero()).map((s) => [s.product.name, s.displaySeconds]));
-      expect(bySeconds).toEqual({ Lamp: 3, Chair: 10, Mat: 20 });
+      expect(bySeconds).toEqual({ Lamp: 5, Chair: 5, Mat: 5 });
     });
 
     test("expired, paused, removed, unpaid and sold-out ads do not show", async () => {
@@ -335,7 +322,7 @@ describe("Home page ad bookings", () => {
     const rejected = await request(app).post(`/api/ad-bookings/${res.body.booking.id}/reject`).set(as("admin")).send({ reason: "The photo is blurry." });
     expect(rejected.body.booking.status).toBe("REJECTED");
     const refund = await Disbursement.findOne({ idempotencyKey: `ad-booking-refund:${res.body.booking.id}` });
-    expect([refund.kind, Number(refund.amount)]).toEqual(["REFUND", 7000]);
+    expect([refund.kind, Number(refund.amount)]).toEqual(["REFUND", 5000]);
     expect(refund.phone).toContain("788123456");
     expect(await hero()).toEqual([]);
     expect(await feeEntries(res.body.booking)).toBe(0);
@@ -353,8 +340,8 @@ describe("Home page ad bookings", () => {
     const a = rows.find((r) => r.id === first.body.booking.id);
     const c = rows.find((r) => r.id === second.body.booking.id);
     expect([a.statusLabel, a.paymentLabel, a.daysLeft]).toEqual(["Live on the home page", "Payment successful", 7]);
-    expect(a.usage).toEqual({ showing: true, position: 2, liveAds: 2, secondsPerTurn: 10, cycleSeconds: 15, sharePercent: 67 });
-    expect([c.usage.position, c.usage.sharePercent]).toEqual([1, 33]);
+    expect(a.usage).toEqual({ showing: true, position: 2, liveAds: 2, secondsPerTurn: 5, cycleSeconds: 10, sharePercent: 50 });
+    expect([c.usage.position, c.usage.sharePercent]).toEqual([1, 50]);
     expect(await mineOf("otherSeller")).toEqual([]);
 
     // A live ad whose product is off sale says so instead of claiming it shows.
