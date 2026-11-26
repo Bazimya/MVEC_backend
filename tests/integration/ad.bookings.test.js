@@ -378,4 +378,83 @@ describe("Home page ad bookings", () => {
     expect([riders.count, riders.link]).toEqual([1, "/admin/riders"]);
     expect(attention.body.badges["/admin/riders"]).toBe(1);
   });
+  describe("sellers edit and delete their own ads", () => {
+    const edit = (who, id, body) => request(app).patch(`/api/ad-bookings/${id}`).set(as(who)).send(body);
+    const del = (who, id) => request(app).delete(`/api/ad-bookings/${id}`).set(as(who));
+
+    test("editing changes what the home page shows, and never the status, price or dates", async () => {
+      const booked = (await book("seller")).body.booking;
+      expect(booked.status).toBe("LIVE");
+      const res = await edit("seller", booked.id, { title: "  New   title ", description: "A brand new description.", productId: String(products[1]._id), status: "PAUSED", amount: 1, endsAt: new Date(0), views: 999 });
+      expect(res.status).toBe(200);
+      const b = res.body.booking;
+      expect([b.title, b.description, b.product, b.status, b.amount, b.views]).toEqual(["New title", "A brand new description.", String(products[1]._id), "LIVE", 5000, 0]);
+      expect(new Date(b.endsAt).getTime()).toBe(new Date(booked.endsAt).getTime());
+      const [live] = await hero();
+      expect([live.title, live.description, String(live.product._id || live.product.id), live.id]).toEqual(["New title", "A brand new description.", String(products[1]._id), booked.bookingNumber]);
+      expect(await AdBooking.countDocuments({})).toBe(1); // edited in place, not duplicated
+    });
+
+    test("an edit is checked like a booking, and changing nothing is refused", async () => {
+      const id = (await book("seller")).body.booking.id;
+      expect((await edit("seller", id, { title: "x" })).status).toBe(400);
+      expect((await edit("seller", id, { description: "y".repeat(1001) })).status).toBe(400);
+      expect((await edit("seller", id, {})).status).toBe(400);
+      expect((await edit("seller", id, { title: "Lamps that last" })).status).toBe(400); // same as now
+      expect((await edit("seller", id, { productId: "nope" })).status).toBe(400);
+      await Product.updateOne({ _id: products[2]._id }, { $set: { stockQuantity: 0 } });
+      expect((await edit("seller", id, { productId: String(products[2]._id) })).status).toBe(400); // out of stock
+      expect((await AdBooking.findById(id)).title).toBe("Lamps that last");
+    });
+
+    test("only the owner can edit or delete; buyers and other sellers are refused", async () => {
+      const id = (await book("seller")).body.booking.id;
+      expect((await edit("otherSeller", id, { title: "Hijacked" })).status).toBe(404);
+      expect((await del("otherSeller", id)).status).toBe(404);
+      expect((await edit("buyer", id, { title: "Hijacked" })).status).toBe(403);
+      expect((await del("buyer", id)).status).toBe(403);
+      expect((await edit("seller", "nope", { title: "Hello there" })).status).toBe(404);
+      expect((await request(app).patch(`/api/ad-bookings/${id}`).send({ title: "Anon title" })).status).toBe(401);
+      expect((await AdBooking.findById(id)).title).toBe("Lamps that last");
+      expect((await hero()).length).toBe(1);
+    });
+
+    test("another seller's product can't be swapped in", async () => {
+      const id = (await book("seller")).body.booking.id;
+      const category = await Category.findOne({});
+      const theirs = await Product.create({ vendor: otherSeller._id, category: category._id, name: "Theirs", description: "Theirs.", price: 100, stockQuantity: 3, status: "ACTIVE", media: { mainImage: "/t.png", gallery: [] } });
+      expect((await edit("seller", id, { productId: String(theirs._id) })).status).toBe(400);
+    });
+
+    test("a paused ad stays paused when edited; ended, rejected or removed ads can't be edited", async () => {
+      const id = (await book("seller")).body.booking.id;
+      await request(app).post(`/api/ad-bookings/${id}/deactivate`).set(as("admin"));
+      const res = await edit("seller", id, { title: "Better title" });
+      expect([res.status, res.body.booking.status, res.body.booking.title]).toEqual([200, "PAUSED", "Better title"]);
+      expect((await hero()).length).toBe(0); // editing did not bypass Ikiguzi's pause
+      await request(app).post(`/api/ad-bookings/${id}/remove`).set(as("admin")).send({ reason: "Not allowed here" });
+      expect((await edit("seller", id, { title: "Back again" })).status).toBe(409);
+      expect((await del("seller", id)).status).toBe(409);
+    });
+
+    test("deleting a live ad takes it off the banner at once, earns the fee and refunds nothing", async () => {
+      const b = (await book("seller")).body.booking;
+      expect((await hero()).length).toBe(1);
+      const res = await del("seller", b.id);
+      expect([res.status, res.body.booking.status]).toEqual([200, "ENDED"]);
+      expect((await hero()).length).toBe(0);
+      expect(await feeEntries(b)).toBe(1);
+      expect(await Disbursement.countDocuments({})).toBe(0);
+      expect((await del("seller", b.id)).status).toBe(409); // already gone: no second fee
+      expect(await feeEntries(b)).toBe(1);
+      const mine = (await request(app).get("/api/ad-bookings/mine").set(as("seller"))).body.bookings;
+      expect(mine.map((m) => m.status)).toEqual(["ENDED"]); // the record stays
+    });
+
+    test("deleting an ad that is still waiting for payment cancels it", async () => {
+      const b = await AdBooking.create({ bookingNumber: "ADB-WAIT-001", seller: seller._id, sellerRole: "vendor", product: products[0]._id, products: [{ id: String(products[0]._id), name: "Lamp", image: "/x.png" }], title: "Waiting ad", description: "Not paid yet.", displaySeconds: 5, pricePerProduct: 5000, amount: 5000, days: 7, paymentMethod: "MOMO", status: "AWAITING_PAYMENT" });
+      const res = await del("seller", String(b._id));
+      expect([res.status, res.body.booking.status]).toEqual([200, "CANCELLED"]);
+    });
+  });
 });
