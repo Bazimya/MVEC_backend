@@ -24,6 +24,8 @@ router.post("/track", adTrack, run((req) => bookings.track(req.body?.id, req.bod
 router.use(protect);
 router.get("/mine", run((req) => bookings.mine(req.user)));
 router.post("/", write, run((req) => bookings.create(req.user, req.body || {})));
+router.patch("/:id", write, run((req) => bookings.update(req.user, req.params.id, req.body || {})));
+router.delete("/:id", write, run((req) => bookings.destroy(req.user, req.params.id)));
 router.post("/:id/cancel", write, run((req) => bookings.cancel(req.user, req.params.id)));
 
 // Ikiguzi

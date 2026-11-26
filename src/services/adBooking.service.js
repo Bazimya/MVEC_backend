@@ -116,6 +116,14 @@ const cleanText = (value, { min, max, label }) => {
   return text;
 };
 
+/** The seller's own product, on sale and in stock: the only kind that can be advertised. */
+async function adProduct(user, productId) {
+  const product = await Product.findOne({ _id: productId, vendor: idOf(user) }).select("name status stockQuantity media").lean();
+  if (!product) throw httpError(400, "You can only advertise your own products.");
+  if (product.status !== "ACTIVE" || !(product.stockQuantity > 0)) throw httpError(400, `${product.name} must be on sale and in stock to advertise.`);
+  return product;
+}
+
 /**
  * Starts a booking for one product and sends the mobile money prompt to
  * `phoneNumber`. Only accounts that list products (vendors, suppliers) may.
@@ -138,9 +146,7 @@ async function create(user, { productId, title, description, phoneNumber, paymen
     throw httpError(400, `That is ${phoneInfo.provider === "MTN" ? "an MTN" : "an Airtel"} number. Use ${method.provider === "MTN" ? "an MTN" : "an Airtel"} number for ${method.label}, or choose the other payment method.`);
   }
 
-  const product = await Product.findOne({ _id: productId, vendor: idOf(user) }).select("name status stockQuantity media").lean();
-  if (!product) throw httpError(400, "You can only advertise your own products.");
-  if (product.status !== "ACTIVE" || !(product.stockQuantity > 0)) throw httpError(400, `${product.name} must be on sale and in stock to advertise.`);
+  const product = await adProduct(user, productId);
 
   // One prompt at a time: a double click must not send the seller two payment requests.
   const recent = await AdBooking.findOne({
@@ -240,6 +246,55 @@ async function cancel(user, id) {
   const claimed = await AdBooking.updateOne({ _id: booking._id, status: "AWAITING_PAYMENT" }, { $set: { status: "CANCELLED", paymentStatus: "CANCELLED" } });
   if (!claimed.modifiedCount) throw httpError(409, `This booking is ${LABELS[booking.status].toLowerCase()}, so it can't be cancelled.`);
   return { message: "Booking cancelled. If you already approved the payment on your phone, tell Ikiguzi support.", booking: view(await AdBooking.findById(booking._id)) };
+}
+
+// A seller can reword or re-picture an ad while it is unpaid, live or paused. Editing never touches the
+// status, the payment or the dates, so it cannot skip payment or undo a pause by Ikiguzi.
+const EDITABLE = ["AWAITING_PAYMENT", "LIVE", "PAUSED"];
+
+async function ownBooking(user, id) {
+  if (!SELLERS.includes(user.role)) throw httpError(403, "Only seller and supplier accounts can manage ads.");
+  const booking = await load(id);
+  if (idOf(booking.seller) !== idOf(user)) throw httpError(404, "Ad booking not found.");
+  return booking;
+}
+
+/** The seller changes their ad's title, description or product (the product's picture is the ad's picture). */
+async function update(user, id, { title, description, productId } = {}) {
+  const booking = await ownBooking(user, id);
+  if (!EDITABLE.includes(booking.status)) throw httpError(409, `This ad is ${LABELS[booking.status].toLowerCase()}, so it can't be edited.`);
+  const set = {};
+  if (title !== undefined) set.title = cleanText(title, { ...TITLE, label: "title" });
+  if (description !== undefined) set.description = cleanText(description, { ...DESCRIPTION, label: "description" });
+  if (productId !== undefined && idOf(productId) !== idOf(booking.product)) {
+    if (!orm.isValidObjectId(productId)) throw httpError(400, "Choose the product you want to advertise.");
+    const product = await adProduct(user, productId);
+    set.product = idOf(product);
+    set.products = [{ id: idOf(product), name: product.name, image: product.media?.mainImage || "" }];
+  }
+  for (const key of Object.keys(set)) if (JSON.stringify(set[key]) === JSON.stringify(booking[key])) delete set[key];
+  if (!Object.keys(set).length) throw httpError(400, "Nothing was changed.");
+  const claimed = await AdBooking.updateOne({ _id: booking._id, status: { $in: EDITABLE } }, { $set: set });
+  if (!claimed.modifiedCount) throw notPossible(booking);
+  return { message: "Your ad was updated.", booking: view(await AdBooking.findById(booking._id)) };
+}
+
+/**
+ * The seller takes their ad down. An unpaid ad is simply cancelled. A live or paused ad
+ * ends now and leaves the banner; it already ran, so the fee is earned and nothing is refunded
+ * (only Ikiguzi refunds). The record stays: money and counts must remain traceable.
+ */
+async function destroy(user, id) {
+  const booking = await ownBooking(user, id);
+  if (booking.status === "AWAITING_PAYMENT") return cancel(user, id);
+  const now = new Date();
+  const claimed = await AdBooking.updateOne(
+    { _id: booking._id, status: { $in: ["LIVE", "PAUSED"] } },
+    { $set: { status: "ENDED", endsAt: booking.endsAt && new Date(booking.endsAt) < now ? booking.endsAt : now } },
+  );
+  if (!claimed.modifiedCount) throw httpError(409, `This ad is ${LABELS[booking.status].toLowerCase()}, so it can't be deleted.`);
+  await recogniseRevenue(booking);
+  return { message: "Your ad was deleted and is off the home page.", booking: view(await AdBooking.findById(booking._id)) };
 }
 
 /**
@@ -454,6 +509,6 @@ async function liveHeroProducts(limit = 6) {
 }
 
 module.exports = {
-  pricing, paymentMethods, quote, create, markPaid, markFailed, cancel, mine, forAdmin,
+  pricing, paymentMethods, quote, create, update, destroy, markPaid, markFailed, cancel, mine, forAdmin,
   approve, reject, deactivate, reactivate, remove, track, activatePaid, liveHeroProducts, LABELS,
 };
