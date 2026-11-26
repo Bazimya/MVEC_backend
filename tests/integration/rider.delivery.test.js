@@ -16,6 +16,18 @@ const deliveryService = require("../../src/services/delivery.service");
 
 jest.setTimeout(90000);
 
+// Notifications are written in the background after a request has already answered, so a test
+// must wait for them instead of reading at once (or after a fixed sleep): a slow machine loses that race.
+async function eventually(read, done, ms = 5000) {
+  const end = Date.now() + ms;
+  let value = await read();
+  while (!done(value) && Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 25));
+    value = await read();
+  }
+  return value;
+}
+
 // Kigali: the store in Kimihurura, the buyer in Remera (about 3 km).
 const STORE = { lat: -1.9536, lng: 30.0936 };
 const BUYER = { lat: -1.9578, lng: 30.1127 };
@@ -338,7 +350,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
 
     // The seller's steps reach the rider; ready tells them to collect it.
     expect((await request(app).patch("/api/orders/vendor/status").set(as("vendor")).send({ orderId: id, status: "READY_FOR_SHIPMENT" })).status).toBe(200);
-    expect(await titlesFor(riderA)).toContain("Parcel ready: collect it now");
+    expect(await eventually(() => titlesFor(riderA), (titles) => titles.includes("Parcel ready: collect it now"))).toContain("Parcel ready: collect it now");
     const trip = (await request(app).get("/api/rider/deliveries/active").set(as("riderA"))).body.delivery;
     expect([trip.ready, trip.allowedNextStatuses]).toEqual([true, ["PICKED_UP"]]);
     expect(trip.progress.find((p) => p.key === "READY_FOR_SHIPMENT").done).toBe(true);
@@ -368,8 +380,7 @@ describe("Ikiguzi riders deliver sellers' parcels", () => {
     await preparedOrder();
     const [job] = await Delivery.find({}).lean();
     expect((job.alerted || []).map(String)).toEqual([String(riderA._id)]);
-    await new Promise((r) => setTimeout(r, 200)); // notifications are sent in the background
-    const note = await Notification.findOne({ recipient: riderA._id, link: `/delivery/offers/${job._id}` }).lean();
+    const note = await eventually(() => Notification.findOne({ recipient: riderA._id, link: `/delivery/offers/${job._id}` }).lean(), Boolean);
     expect(note?.title).toMatch(/waiting near you/);
 
     const opened = await request(app).get(`/api/rider/deliveries/${job._id}`).set(as("riderA"));
